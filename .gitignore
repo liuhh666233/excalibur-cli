@@ -25,3 +25,6 @@ result/
 
 # python 
 __pycache__/
+
+# direnv
+.direnv/
