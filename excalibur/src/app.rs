@@ -2,8 +2,9 @@ use crate::event::{AppEvent, Event, EventHandler};
 use crate::modules::{manager::ModuleManager, ModuleAction};
 use crate::view::View;
 use ratatui::{
-    DefaultTerminal,
+    backend::Backend,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    Terminal,
 };
 
 /// Application.
@@ -40,7 +41,7 @@ impl App {
     }
 
     /// Run the application's main loop.
-    pub fn run(mut self, mut terminal: DefaultTerminal) -> color_eyre::Result<()> {
+    pub fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> color_eyre::Result<()> {
         while self.running {
             terminal.draw(|frame| frame.render_widget(&self, frame.area()))?;
             self.handle_events()?;
@@ -74,6 +75,54 @@ impl App {
                     }
                     ModuleAction::Quit => {
                         self.quit();
+                    }
+                    ModuleAction::Output(cmd) => {
+                        // Output command to stdout for Fish integration
+                        // Exit code 0 means insert command into command line
+                        // Must restore terminal before exit since exit() bypasses Drop
+
+                        // Open /dev/tty to send cleanup commands
+                        if let Ok(mut tty) = std::fs::OpenOptions::new()
+                            .write(true)
+                            .open("/dev/tty")
+                        {
+                            // Clear screen and restore terminal
+                            let _ = crossterm::execute!(
+                                &mut tty,
+                                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                                crossterm::cursor::MoveTo(0, 0),
+                                crossterm::terminal::LeaveAlternateScreen,
+                                crossterm::event::DisableMouseCapture
+                            );
+                        }
+                        let _ = crossterm::terminal::disable_raw_mode();
+
+                        println!("{}", cmd);
+                        std::process::exit(0);
+                    }
+                    ModuleAction::OutputAndExecute(cmd) => {
+                        // Output command and signal to execute immediately
+                        // Exit code 10 means insert and execute command
+                        // Must restore terminal before exit since exit() bypasses Drop
+
+                        // Open /dev/tty to send cleanup commands
+                        if let Ok(mut tty) = std::fs::OpenOptions::new()
+                            .write(true)
+                            .open("/dev/tty")
+                        {
+                            // Clear screen and restore terminal
+                            let _ = crossterm::execute!(
+                                &mut tty,
+                                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                                crossterm::cursor::MoveTo(0, 0),
+                                crossterm::terminal::LeaveAlternateScreen,
+                                crossterm::event::DisableMouseCapture
+                            );
+                        }
+                        let _ = crossterm::terminal::disable_raw_mode();
+
+                        println!("{}", cmd);
+                        std::process::exit(10);
                     }
                     ModuleAction::None | ModuleAction::Notification(_) => {}
                 },

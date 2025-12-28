@@ -12,69 +12,88 @@ use state::{HistoryState, InputMode};
 
 #[derive(Debug)]
 pub struct HistoryModule {
-    state: Option<HistoryState>,
-    parser: FishHistoryParser,
+    state: HistoryState,  // 直接存储，不用 Option
     clipboard: ClipboardManager,
 }
 
 impl HistoryModule {
     pub fn new() -> Self {
+        // 预加载：在创建时就解析历史文件
+        let parser = FishHistoryParser::new().ok();
+
+        let (commands, stats) = if let Some(parser) = parser {
+            // 尝试解析文件
+            match (parser.parse(), parser.get_stats()) {
+                (Ok(commands), Ok(stats)) => (commands, stats),
+                _ => (Vec::new(), std::collections::HashMap::new()),
+            }
+        } else {
+            // 解析器创建失败，使用空数据
+            (Vec::new(), std::collections::HashMap::new())
+        };
+
         Self {
-            state: None,
-            parser: FishHistoryParser::new().unwrap_or_else(|_| {
-                // Fallback if parser creation fails
-                FishHistoryParser::new().unwrap()
-            }),
+            state: HistoryState::new(commands, stats),
             clipboard: ClipboardManager::new(),
         }
     }
 
     /// Handle key events in normal mode
     fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<ModuleAction> {
-        let Some(ref mut state) = self.state else {
-            return Ok(ModuleAction::None);
-        };
+        use ratatui::crossterm::event::KeyModifiers;
 
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 return Ok(ModuleAction::Exit);
             }
+            KeyCode::Enter => {
+                // Output selected command to stdout for Fish integration
+                if let Some(cmd) = self.state.get_selected_command() {
+                    return Ok(ModuleAction::Output(cmd.cmd.clone()));
+                }
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+O: Output and execute immediately
+                if let Some(cmd) = self.state.get_selected_command() {
+                    return Ok(ModuleAction::OutputAndExecute(cmd.cmd.clone()));
+                }
+            }
             KeyCode::Char('/') => {
-                state.input_mode = InputMode::Search;
-                state.search_query.clear();
+                self.state.input_mode = InputMode::Search;
+                self.state.search_query.clear();
             }
             KeyCode::Char('s') => {
-                state.cycle_sort_mode();
+                self.state.cycle_sort_mode();
             }
             KeyCode::Char('y') => {
-                if let Some(cmd) = state.get_selected_command() {
+                if let Some(cmd) = self.state.get_selected_command() {
                     match self.clipboard.copy(&cmd.cmd) {
                         Ok(_) => {
-                            state.set_notification(format!("Copied: {}", cmd.cmd));
+                            self.state.set_notification(format!("Copied: {}", cmd.cmd));
                         }
                         Err(e) => {
-                            state.set_notification(format!("Failed to copy: {}", e));
+                            self.state.set_notification(format!("Failed to copy: {}", e));
                         }
                     }
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                state.select_previous();
+                self.state.select_previous();
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                state.select_next();
+                self.state.select_next();
             }
             KeyCode::PageUp => {
-                state.page_up();
+                self.state.page_up();
             }
             KeyCode::PageDown => {
-                state.page_down();
+                self.state.page_down();
             }
             KeyCode::Home | KeyCode::Char('g') => {
-                state.select_first();
+                self.state.select_first();
             }
             KeyCode::End | KeyCode::Char('G') => {
-                state.select_last();
+                self.state.select_last();
             }
             _ => {}
         }
@@ -83,26 +102,22 @@ impl HistoryModule {
 
     /// Handle key events in search mode
     fn handle_search_mode(&mut self, key: KeyEvent) -> Result<ModuleAction> {
-        let Some(ref mut state) = self.state else {
-            return Ok(ModuleAction::None);
-        };
-
         match key.code {
             KeyCode::Esc => {
-                state.input_mode = InputMode::Normal;
-                state.search_query.clear();
-                state.apply_filters();
+                self.state.input_mode = InputMode::Normal;
+                self.state.search_query.clear();
+                self.state.apply_filters();
             }
             KeyCode::Enter => {
-                state.input_mode = InputMode::Normal;
+                self.state.input_mode = InputMode::Normal;
             }
             KeyCode::Backspace => {
-                state.search_query.pop();
-                state.apply_filters();
+                self.state.search_query.pop();
+                self.state.apply_filters();
             }
             KeyCode::Char(c) => {
-                state.search_query.push(c);
-                state.apply_filters();
+                self.state.search_query.push(c);
+                self.state.apply_filters();
             }
             _ => {}
         }
@@ -121,43 +136,41 @@ impl Module for HistoryModule {
     }
 
     fn init(&mut self) -> Result<()> {
-        // Parse history file
-        let commands = self.parser.parse()?;
-        let stats = self.parser.get_stats()?;
+        // 数据已在 new() 中预加载，这里只重置 UI 状态
+        self.state.selected_index = 0;
+        self.state.search_query.clear();
+        self.state.input_mode = InputMode::Normal;
+        self.state.notification = None;
 
-        // Initialize state
-        self.state = Some(HistoryState::new(commands, stats));
+        // 重新应用过滤和排序（以防数据已更新）
+        self.state.apply_filters();
 
         Ok(())
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<ModuleAction> {
-        if let Some(ref state) = self.state {
-            match state.input_mode {
-                InputMode::Normal => self.handle_normal_mode(key_event),
-                InputMode::Search => self.handle_search_mode(key_event),
-            }
-        } else {
-            Ok(ModuleAction::None)
+        match self.state.input_mode {
+            InputMode::Normal => self.handle_normal_mode(key_event),
+            InputMode::Search => self.handle_search_mode(key_event),
         }
     }
 
     fn update(&mut self) -> Result<()> {
-        // Clear expired notifications
-        if let Some(ref mut state) = self.state {
-            state.clear_expired_notifications();
-        }
+        // 清理过期通知
+        self.state.clear_expired_notifications();
         Ok(())
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
-        if let Some(ref state) = self.state {
-            ui::render(state, area, buf);
-        }
+        ui::render(&self.state, area, buf);
     }
 
     fn cleanup(&mut self) -> Result<()> {
-        self.state = None;
+        // 数据保留在内存中，只重置 UI 状态
+        self.state.selected_index = 0;
+        self.state.search_query.clear();
+        self.state.input_mode = InputMode::Normal;
+        self.state.notification = None;
         Ok(())
     }
 }

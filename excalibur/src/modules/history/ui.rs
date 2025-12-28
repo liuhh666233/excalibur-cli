@@ -90,15 +90,43 @@ fn render_table(state: &HistoryState, area: Rect, buf: &mut Buffer) {
         return;
     }
 
+    // 虚拟滚动：只渲染可见行
+    let table_height = area.height.saturating_sub(4) as usize; // 减去边框和表头
+    let visible_rows = table_height.min(30); // 最多渲染 30 行
+
+    // 计算可见范围
+    let selected = state.selected_index;
+    let total = state.filtered_indices.len();
+
+    // 计算滚动窗口
+    let start = if selected < visible_rows / 2 {
+        0
+    } else if selected + visible_rows / 2 >= total {
+        total.saturating_sub(visible_rows)
+    } else {
+        selected.saturating_sub(visible_rows / 2)
+    };
+    let end = (start + visible_rows).min(total);
+
+    // 只为可见行创建 Row
     let rows: Vec<Row> = state
         .filtered_indices
         .iter()
+        .skip(start)
+        .take(end - start)
         .map(|&idx| {
             let cmd = &state.commands[idx];
 
-            // Truncate command if too long
-            let cmd_display = if cmd.cmd.len() > 60 {
-                format!("{}...", &cmd.cmd[..57])
+            // 使用字节长度预检查（更快）
+            let cmd_display = if cmd.cmd.len() > 180 {  // 约 60 个中文字符
+                // 只在需要时才调用昂贵的 chars 操作
+                let char_count = cmd.cmd.chars().count();
+                if char_count > 60 {
+                    let truncated: String = cmd.cmd.chars().take(57).collect();
+                    format!("{}...", truncated)
+                } else {
+                    cmd.cmd.clone()
+                }
             } else {
                 cmd.cmd.clone()
             };
@@ -133,13 +161,19 @@ fn render_table(state: &HistoryState, area: Rect, buf: &mut Buffer) {
         )
         .bottom_margin(1);
 
-    let mut table_state = state.table_state.clone();
+    // 调整 table_state 的选中索引为相对位置
+    let mut adjusted_state = state.table_state.clone();
+    if let Some(selected) = adjusted_state.selected() {
+        if selected >= start {
+            adjusted_state.select(Some(selected - start));
+        }
+    }
 
     let table = Table::new(rows, widths)
         .header(header)
         .block(
             Block::bordered()
-                .title(" Commands ")
+                .title(format!(" Commands ({}-{}/{}) ", start + 1, end, total))
                 .border_type(BorderType::Rounded),
         )
         .row_highlight_style(
@@ -149,7 +183,7 @@ fn render_table(state: &HistoryState, area: Rect, buf: &mut Buffer) {
         )
         .highlight_symbol("▶ ");
 
-    ratatui::widgets::StatefulWidget::render(table, area, buf, &mut table_state);
+    ratatui::widgets::StatefulWidget::render(table, area, buf, &mut adjusted_state);
 }
 
 /// Render the details panel
@@ -200,7 +234,7 @@ fn render_details(state: &HistoryState, area: Rect, buf: &mut Buffer) {
 fn render_status_bar(state: &HistoryState, area: Rect, buf: &mut Buffer) {
     let help_text = match state.input_mode {
         InputMode::Search => "Esc: Exit search │ Enter: Apply filter │ Type to search",
-        InputMode::Normal => "Esc/q: Exit │ /: Search │ s: Sort │ y: Copy │ ↑↓/jk: Navigate",
+        InputMode::Normal => "Enter: Select │ Ctrl+O: Execute │ Esc/q: Exit │ /: Search │ s: Sort │ ↑↓/jk: Navigate",
     };
 
     let status = Paragraph::new(help_text)

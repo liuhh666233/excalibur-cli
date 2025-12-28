@@ -30,6 +30,10 @@ pub enum ModuleAction {
     Quit,
     /// Show a notification message
     Notification(String),
+    /// Output a command to stdout and exit (for Fish integration)
+    Output(String),
+    /// Output a command and execute immediately
+    OutputAndExecute(String),
 }
 
 /// Trait that all modules must implement
