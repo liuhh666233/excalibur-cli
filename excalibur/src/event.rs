@@ -33,10 +33,12 @@ pub enum Event {
 /// You can extend this enum with your own custom events.
 #[derive(Clone, Debug)]
 pub enum AppEvent {
-    /// Increment the counter.
-    Increment,
-    /// Decrement the counter.
-    Decrement,
+    /// Enter a module.
+    EnterModule(crate::modules::ModuleId),
+    /// Exit the current module.
+    ExitModule,
+    /// Handle module action.
+    ModuleAction(crate::modules::ModuleAction),
     /// Quit the application.
     Quit,
 }

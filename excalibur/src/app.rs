@@ -1,4 +1,6 @@
 use crate::event::{AppEvent, Event, EventHandler};
+use crate::modules::{manager::ModuleManager, ModuleAction};
+use crate::view::View;
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -9,8 +11,12 @@ use ratatui::{
 pub struct App {
     /// Is the application running?
     pub running: bool,
-    /// Counter.
-    pub counter: u8,
+    /// Current view
+    pub current_view: View,
+    /// Module manager
+    pub module_manager: ModuleManager,
+    /// Selected menu item index (for main menu navigation)
+    pub selected_menu_item: usize,
     /// Event handler.
     pub events: EventHandler,
 }
@@ -19,7 +25,9 @@ impl Default for App {
     fn default() -> Self {
         Self {
             running: true,
-            counter: 0,
+            current_view: View::MainMenu,
+            module_manager: ModuleManager::new(),
+            selected_menu_item: 0,
             events: EventHandler::new(),
         }
     }
@@ -52,8 +60,23 @@ impl App {
                 _ => {}
             },
             Event::App(app_event) => match app_event {
-                AppEvent::Increment => self.increment_counter(),
-                AppEvent::Decrement => self.decrement_counter(),
+                AppEvent::EnterModule(module_id) => {
+                    self.module_manager.activate(module_id)?;
+                    self.current_view = View::Module(module_id);
+                }
+                AppEvent::ExitModule => {
+                    self.module_manager.deactivate()?;
+                    self.current_view = View::MainMenu;
+                }
+                AppEvent::ModuleAction(action) => match action {
+                    ModuleAction::Exit => {
+                        self.events.send(AppEvent::ExitModule);
+                    }
+                    ModuleAction::Quit => {
+                        self.quit();
+                    }
+                    ModuleAction::None | ModuleAction::Notification(_) => {}
+                },
                 AppEvent::Quit => self.quit(),
             },
         }
@@ -62,14 +85,63 @@ impl App {
 
     /// Handles the key events and updates the state of [`App`].
     pub fn handle_key_event(&mut self, key_event: KeyEvent) -> color_eyre::Result<()> {
-        match key_event.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.events.send(AppEvent::Quit),
-            KeyCode::Char('c' | 'C') if key_event.modifiers == KeyModifiers::CONTROL => {
-                self.events.send(AppEvent::Quit)
+        // Global quit handlers
+        if matches!(key_event.code, KeyCode::Char('c' | 'C'))
+            && key_event.modifiers == KeyModifiers::CONTROL
+        {
+            self.events.send(AppEvent::Quit);
+            return Ok(());
+        }
+
+        match &self.current_view {
+            View::MainMenu => self.handle_main_menu_keys(key_event),
+            View::Module(_) => {
+                // Route to active module
+                let action = self.module_manager.handle_key_event(key_event)?;
+                self.events.send(AppEvent::ModuleAction(action));
+                Ok(())
             }
-            KeyCode::Right => self.events.send(AppEvent::Increment),
-            KeyCode::Left => self.events.send(AppEvent::Decrement),
-            // Other handlers you could add here.
+        }
+    }
+
+    /// Handle key events in main menu
+    fn handle_main_menu_keys(&mut self, key_event: KeyEvent) -> color_eyre::Result<()> {
+        let modules = self.module_manager.list_modules();
+        let module_count = modules.len();
+
+        match key_event.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.events.send(AppEvent::Quit);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if module_count > 0 {
+                    self.selected_menu_item = (self.selected_menu_item + 1) % module_count;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if module_count > 0 {
+                    self.selected_menu_item =
+                        if self.selected_menu_item == 0 {
+                            module_count - 1
+                        } else {
+                            self.selected_menu_item - 1
+                        };
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(module) = modules.get(self.selected_menu_item) {
+                    self.events.send(AppEvent::EnterModule(module.id));
+                }
+            }
+            KeyCode::Char(c) => {
+                // Check for module shortcuts
+                for module in &modules {
+                    if module.shortcut == Some(c) {
+                        self.events.send(AppEvent::EnterModule(module.id));
+                        break;
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -79,18 +151,15 @@ impl App {
     ///
     /// The tick event is where you can update the state of your application with any logic that
     /// needs to be updated at a fixed frame rate. E.g. polling a server, updating an animation.
-    pub fn tick(&self) {}
+    pub fn tick(&mut self) {
+        // Update active module
+        if let Err(e) = self.module_manager.update() {
+            eprintln!("Error updating module: {}", e);
+        }
+    }
 
     /// Set running to false to quit the application.
     pub fn quit(&mut self) {
         self.running = false;
-    }
-
-    pub fn increment_counter(&mut self) {
-        self.counter = self.counter.saturating_add(1);
-    }
-
-    pub fn decrement_counter(&mut self) {
-        self.counter = self.counter.saturating_sub(1);
     }
 }
