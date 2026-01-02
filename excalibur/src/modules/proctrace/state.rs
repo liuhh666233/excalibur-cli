@@ -311,12 +311,19 @@ impl ProcessTracerState {
             }
         }
 
+        // Auto-expand root nodes for better initial visibility
+        for root_pid in &self.tree_roots.clone() {
+            if let Some(node) = self.tree_nodes.get_mut(root_pid) {
+                node.is_expanded = true;
+            }
+        }
+
         // Calculate depths
         for root_pid in &self.tree_roots.clone() {
             self.calculate_depth(*root_pid, 0);
         }
 
-        // Build initial visible nodes (only roots)
+        // Build initial visible nodes (roots + their expanded children)
         self.rebuild_visible_nodes();
     }
 
