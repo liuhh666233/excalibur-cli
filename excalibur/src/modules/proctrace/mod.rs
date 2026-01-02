@@ -80,6 +80,18 @@ impl ProcessTracerModule {
                 Ok(ModuleAction::None)
             }
 
+            // Toggle tree view
+            KeyCode::Char('t') => {
+                self.state.toggle_view_mode();
+                Ok(ModuleAction::None)
+            }
+
+            // Expand/collapse in tree view (Enter or Space)
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.state.toggle_tree_expansion();
+                Ok(ModuleAction::None)
+            }
+
             // Refresh
             KeyCode::Char('r') => {
                 self.refresh_processes()?;

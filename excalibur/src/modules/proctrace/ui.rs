@@ -1,5 +1,5 @@
 use super::collector::Supervisor;
-use super::state::{InputMode, ProcessTracerState};
+use super::state::{InputMode, ProcessTracerState, ProcessTreeNode, ViewMode};
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -24,7 +24,13 @@ pub fn render(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
 
     render_header(state, chunks[0], buf);
     render_search_bar(state, chunks[1], buf);
-    render_process_table(state, chunks[2], buf);
+
+    // Render process list or tree based on view mode
+    match state.view_mode {
+        ViewMode::List => render_process_table(state, chunks[2], buf),
+        ViewMode::Tree => render_process_tree(state, chunks[2], buf),
+    }
+
     render_details_panel(state, chunks[3], buf);
     render_status_bar(state, chunks[4], buf);
 
@@ -162,7 +168,7 @@ fn render_process_table(state: &ProcessTracerState, area: Rect, buf: &mut Buffer
 
 /// Render details panel for selected process
 fn render_details_panel(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    if let Some(proc) = state.get_selected_process() {
+    if let Some(proc) = state.get_selected_process_tree() {
         let cmdline = if proc.cmdline.is_empty() {
             format!("[{}]", proc.name)
         } else {
@@ -249,8 +255,11 @@ fn render_details_panel(state: &ProcessTracerState, area: Rect, buf: &mut Buffer
 }
 
 /// Render status bar with keybindings
-fn render_status_bar(_state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    let help_text = "[j/k] Navigate  [s] Sort  [r] Refresh  [/] Search  [Esc/q] Exit";
+fn render_status_bar(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
+    let help_text = match state.view_mode {
+        ViewMode::List => "[j/k] Navigate  [s] Sort  [t] Tree  [r] Refresh  [/] Search  [Esc/q] Exit",
+        ViewMode::Tree => "[j/k] Navigate  [Enter/Space] Expand  [t] List  [r] Refresh  [/] Search  [Esc/q] Exit",
+    };
 
     let status = Paragraph::new(help_text)
         .block(
@@ -299,4 +308,132 @@ fn render_notification(message: &str, area: Rect, buf: &mut Buffer) {
         .style(Style::default().fg(Color::Green).bg(Color::Black));
 
     notification.render(notification_area, buf);
+}
+
+/// Render process tree view
+fn render_process_tree(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
+    if state.visible_tree_nodes.is_empty() {
+        let msg = Paragraph::new("No processes found")
+            .block(
+                Block::bordered()
+                    .title(" Process Tree ")
+                    .border_type(BorderType::Rounded),
+            )
+            .centered()
+            .style(Style::default().fg(Color::DarkGray));
+        msg.render(area, buf);
+        return;
+    }
+
+    // Create tree rows
+    let rows: Vec<Row> = state
+        .visible_tree_nodes
+        .iter()
+        .map(|&pid| {
+            let node = state.tree_nodes.get(&pid).unwrap();
+            let proc = &state.processes[node.process_idx];
+
+            // Build tree prefix (├─, └─, etc.)
+            let tree_prefix = build_tree_prefix(state, pid, node);
+
+            // Expansion indicator
+            let expansion_indicator = if !node.children.is_empty() {
+                if node.is_expanded {
+                    "[-] "
+                } else {
+                    "[+] "
+                }
+            } else {
+                "    "
+            };
+
+            // Combine prefix with process name
+            let name_with_tree = format!("{}{}{}", tree_prefix, expansion_indicator, proc.name);
+
+            // Format warnings
+            let warning_symbols: Vec<&str> = proc.warnings.iter().map(|w| w.symbol()).collect();
+            let warnings_str = warning_symbols.join(" ");
+
+            Row::new(vec![
+                proc.pid.to_string(),
+                name_with_tree,
+                proc.user.clone(),
+                format!("{:.1}%", proc.cpu_percent),
+                proc.memory_str(),
+                warnings_str,
+            ])
+        })
+        .collect();
+
+    // Create table
+    let header = Row::new(vec!["PID", "Name", "User", "CPU%", "Memory", "Warnings"])
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .bottom_margin(1);
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(8),
+            Constraint::Min(25),
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(12),
+            Constraint::Min(10),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::bordered()
+            .title(" Process Tree ")
+            .border_type(BorderType::Rounded),
+    )
+    .row_highlight_style(
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol("▶ ");
+
+    let mut table_state = state.table_state.clone();
+    StatefulWidget::render(table, area, buf, &mut table_state);
+}
+
+/// Build tree prefix with box-drawing characters
+fn build_tree_prefix(state: &ProcessTracerState, pid: u32, node: &ProcessTreeNode) -> String {
+    let mut prefix = String::new();
+
+    // Add indentation based on depth
+    for _ in 0..node.depth {
+        prefix.push_str("  ");
+    }
+
+    // Add tree connector if not root
+    if node.depth > 0 {
+        let is_last_child = is_last_sibling(state, pid);
+
+        if is_last_child {
+            prefix.push_str("└─ ");
+        } else {
+            prefix.push_str("├─ ");
+        }
+    }
+
+    prefix
+}
+
+/// Check if process is the last sibling
+fn is_last_sibling(state: &ProcessTracerState, pid: u32) -> bool {
+    // Find parent
+    if let Some(proc) = state.processes.iter().find(|p| p.pid == pid) {
+        if let Some(parent_node) = state.tree_nodes.get(&proc.ppid) {
+            if let Some(last_child) = parent_node.children.last() {
+                return *last_child == pid;
+            }
+        }
+    }
+    false
 }

@@ -1,5 +1,6 @@
 use super::collector::ProcessInfo;
 use ratatui::widgets::TableState;
+use std::collections::HashMap;
 use std::time::Instant;
 
 /// Input mode for the process tracer
@@ -40,6 +41,22 @@ impl SortMode {
     }
 }
 
+/// View mode for process display
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ViewMode {
+    List,  // Flat list view
+    Tree,  // Hierarchical tree view
+}
+
+/// Process tree node
+#[derive(Debug, Clone)]
+pub struct ProcessTreeNode {
+    pub process_idx: usize,    // Index into processes Vec
+    pub children: Vec<u32>,    // PIDs of child processes
+    pub is_expanded: bool,     // Expansion state
+    pub depth: usize,          // Tree depth for indentation
+}
+
 /// State for the process tracer module
 #[derive(Debug)]
 pub struct ProcessTracerState {
@@ -69,6 +86,18 @@ pub struct ProcessTracerState {
 
     /// Notification message with timestamp
     pub notification: Option<(String, Instant)>,
+
+    /// Current view mode
+    pub view_mode: ViewMode,
+
+    /// Process tree (PID -> TreeNode)
+    pub tree_nodes: HashMap<u32, ProcessTreeNode>,
+
+    /// Tree root PIDs (processes with no parent or parent not in list)
+    pub tree_roots: Vec<u32>,
+
+    /// Flattened visible tree nodes (for navigation)
+    pub visible_tree_nodes: Vec<u32>,
 }
 
 impl ProcessTracerState {
@@ -83,6 +112,10 @@ impl ProcessTracerState {
             sort_mode: SortMode::Cpu,
             last_update: Instant::now(),
             notification: None,
+            view_mode: ViewMode::List,
+            tree_nodes: HashMap::new(),
+            tree_roots: Vec::new(),
+            visible_tree_nodes: Vec::new(),
         };
 
         state.table_state.select(Some(0));
@@ -100,6 +133,11 @@ impl ProcessTracerState {
         {
             self.selected_index = self.filtered_indices.len() - 1;
             self.table_state.select(Some(self.selected_index));
+        }
+
+        // Rebuild tree if in tree view
+        if self.view_mode == ViewMode::Tree {
+            self.build_tree();
         }
     }
 
@@ -236,5 +274,135 @@ impl ProcessTracerState {
     /// Get process count strings
     pub fn get_counts(&self) -> (usize, usize) {
         (self.filtered_indices.len(), self.processes.len())
+    }
+
+    /// Build process tree from flat process list
+    pub fn build_tree(&mut self) {
+        self.tree_nodes.clear();
+        self.tree_roots.clear();
+
+        // Create a PID -> process_idx map for quick lookup
+        let mut pid_to_idx: HashMap<u32, usize> = HashMap::new();
+        for (idx, proc) in self.processes.iter().enumerate() {
+            pid_to_idx.insert(proc.pid, idx);
+        }
+
+        // Build parent-child relationships
+        for (idx, proc) in self.processes.iter().enumerate() {
+            let node = ProcessTreeNode {
+                process_idx: idx,
+                children: Vec::new(),
+                is_expanded: false,
+                depth: 0,
+            };
+            self.tree_nodes.insert(proc.pid, node);
+        }
+
+        // Link children to parents
+        for proc in &self.processes {
+            if let Some(parent_idx) = pid_to_idx.get(&proc.ppid) {
+                let parent_pid = self.processes[*parent_idx].pid;
+                if let Some(parent_node) = self.tree_nodes.get_mut(&parent_pid) {
+                    parent_node.children.push(proc.pid);
+                }
+            } else {
+                // No parent in list -> root
+                self.tree_roots.push(proc.pid);
+            }
+        }
+
+        // Calculate depths
+        for root_pid in &self.tree_roots.clone() {
+            self.calculate_depth(*root_pid, 0);
+        }
+
+        // Build initial visible nodes (only roots)
+        self.rebuild_visible_nodes();
+    }
+
+    /// Recursively calculate tree depth
+    fn calculate_depth(&mut self, pid: u32, depth: usize) {
+        if let Some(node) = self.tree_nodes.get_mut(&pid) {
+            node.depth = depth;
+            let children = node.children.clone();
+            for child_pid in children {
+                self.calculate_depth(child_pid, depth + 1);
+            }
+        }
+    }
+
+    /// Rebuild visible nodes based on expansion state
+    pub fn rebuild_visible_nodes(&mut self) {
+        self.visible_tree_nodes.clear();
+        let roots = self.tree_roots.clone();
+        for root_pid in &roots {
+            self.add_visible_subtree(*root_pid);
+        }
+    }
+
+    /// Recursively add visible nodes
+    fn add_visible_subtree(&mut self, pid: u32) {
+        self.visible_tree_nodes.push(pid);
+
+        if let Some(node) = self.tree_nodes.get(&pid) {
+            if node.is_expanded {
+                let children = node.children.clone();
+                for child_pid in children {
+                    self.add_visible_subtree(child_pid);
+                }
+            }
+        }
+    }
+
+    /// Toggle between List and Tree view
+    pub fn toggle_view_mode(&mut self) {
+        self.view_mode = match self.view_mode {
+            ViewMode::List => {
+                // Build tree when entering tree view
+                self.build_tree();
+                ViewMode::Tree
+            }
+            ViewMode::Tree => ViewMode::List,
+        };
+
+        self.set_notification(format!("View: {:?}", self.view_mode));
+    }
+
+    /// Toggle expansion of current node in tree view
+    pub fn toggle_tree_expansion(&mut self) {
+        if self.view_mode != ViewMode::Tree {
+            return;
+        }
+
+        // Get currently selected PID from visible nodes
+        if let Some(&pid) = self.visible_tree_nodes.get(self.selected_index) {
+            if let Some(node) = self.tree_nodes.get_mut(&pid) {
+                // Only toggle if has children
+                if !node.children.is_empty() {
+                    node.is_expanded = !node.is_expanded;
+                    self.rebuild_visible_nodes();
+
+                    // Keep selection valid
+                    if self.selected_index >= self.visible_tree_nodes.len() {
+                        self.selected_index = self.visible_tree_nodes.len().saturating_sub(1);
+                    }
+                    self.table_state.select(Some(self.selected_index));
+                }
+            }
+        }
+    }
+
+    /// Get selected process in tree view
+    pub fn get_selected_process_tree(&self) -> Option<&ProcessInfo> {
+        if self.view_mode == ViewMode::Tree {
+            self.visible_tree_nodes
+                .get(self.selected_index)
+                .and_then(|&pid| {
+                    self.tree_nodes.get(&pid)
+                        .and_then(|node| self.processes.get(node.process_idx))
+                })
+        } else {
+            self.get_selected_process()
+        }
     }
 }
