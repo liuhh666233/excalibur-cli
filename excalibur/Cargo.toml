@@ -15,6 +15,7 @@ serde_yaml = "0.9"
 chrono = "0.4"
 arboard = "3.4"
 dirs = "5.0"
+clap = { version = "4.5", features = ["derive"] }
 
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
 [profile.release]

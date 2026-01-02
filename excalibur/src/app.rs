@@ -40,6 +40,15 @@ impl App {
         Self::default()
     }
 
+    /// Constructs a new App instance that starts directly in a module
+    pub fn new_with_module(module_id: crate::modules::ModuleId) -> Self {
+        let mut app = Self::default();
+        app.current_view = View::Module(module_id);
+        // Module will be activated on first event loop iteration
+        app.events.send(AppEvent::EnterModule(module_id));
+        app
+    }
+
     /// Run the application's main loop.
     pub fn run<B: Backend>(mut self, terminal: &mut Terminal<B>) -> color_eyre::Result<()> {
         while self.running {

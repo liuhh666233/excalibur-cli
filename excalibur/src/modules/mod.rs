@@ -10,6 +10,17 @@ pub enum ModuleId {
     History,
 }
 
+impl ModuleId {
+    /// Convert a CLI command name to ModuleId
+    /// Accepts both full names and shortcuts (case-insensitive)
+    pub fn from_command_name(name: &str) -> Option<Self> {
+        match name.to_lowercase().as_str() {
+            "history" | "h" => Some(ModuleId::History),
+            _ => None,
+        }
+    }
+}
+
 /// Metadata describing a module
 #[derive(Debug, Clone)]
 pub struct ModuleMetadata {
