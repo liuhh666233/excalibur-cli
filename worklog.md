@@ -1089,3 +1089,165 @@ excalibur pt            # 启动进程追踪器
 ```
 
 或在主菜单中选择 "Process Tracer"。
+
+---
+
+## [2026-01-02] 功能增强：进程追踪器警告系统 (Process Tracer Warning System)
+
+### 实施总结
+
+**状态**: ✅ 完成
+
+成功为 Process Tracer 模块添加警告系统，帮助用户快速识别安全和性能问题。
+
+### 实现内容
+
+**1. 警告类型**
+
+实现了 4 种警告检测：
+
+| 警告类型 | 符号 | 检测条件 | 颜色 |
+|---------|------|---------|------|
+| Root 权限 | ⚠ ROOT | UID = 0 | 红色 |
+| 高 CPU | ⚠ HIGH_CPU | CPU > 80% | 黄色 |
+| 高内存 | ⚠ HIGH_MEM | 内存 > 1GB | 黄色 |
+| 长时间运行 | ⚠ LONG_UPTIME | 运行时间 > 90天 | 青色 |
+
+**2. 代码实现**
+
+**新增数据结构** (collector.rs):
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProcessWarning {
+    RunningAsRoot,
+    HighCpu { percent: f32 },
+    HighMemory { gb: f64 },
+    LongUptime { days: u64 },
+}
+
+impl ProcessWarning {
+    pub fn symbol(&self) -> &str { /* ... */ }
+    pub fn description(&self) -> String { /* ... */ }
+    pub fn color(&self) -> ratatui::style::Color { /* ... */ }
+}
+```
+
+**警告检测逻辑** (collector.rs):
+```rust
+fn detect_warnings(info: &ProcessInfo) -> Vec<ProcessWarning> {
+    // 检测 4 种警告条件
+    // - Root 权限 (UID 0)
+    // - 高 CPU (>80%)
+    // - 高内存 (>1GB)
+    // - 长运行时间 (>90天)
+}
+```
+
+**ProcessInfo 扩展**:
+```rust
+pub struct ProcessInfo {
+    // ... existing fields
+    pub warnings: Vec<ProcessWarning>,  // NEW
+}
+```
+
+**3. UI 更新**
+
+**进程表格** (ui.rs):
+- 新增 "Warnings" 列
+- 显示警告符号（如 "⚠ ROOT ⚠ HIGH_CPU"）
+- 调整列宽适配新列
+
+**详情面板** (ui.rs):
+- 新增 "Warnings:" 部分
+- 逐行显示每个警告及其描述
+- 彩色标识（红色、黄色、青色）
+
+**4. 视觉效果**
+
+**表格视图示例**:
+```
+PID    Name       User   CPU%   Memory     Warnings
+1      systemd    0      0.1%   12.3 MB    ⚠ ROOT ⚠ LONG_UPTIME
+5678   stress-ng  lxb    98.5%  12.3 MB    ⚠ HIGH_CPU
+9012   postgres   999    2.3%   1.5 GB     ⚠ HIGH_MEM
+```
+
+**详情面板示例**:
+```
+Details - systemd (PID 1)
+Command: /lib/systemd/systemd --system
+Parent:  PID 0
+User:    0
+Uptime:  123d 5h 23m
+Supervisor: unknown
+Warnings:
+  ⚠ ROOT Running as root
+  ⚠ LONG_UPTIME Long uptime: 123 days
+```
+
+### 修改文件清单
+
+**修改的文件**:
+- `excalibur/src/modules/proctrace/collector.rs` (+84 lines)
+  - 添加 ProcessWarning enum
+  - 添加 warnings 字段到 ProcessInfo
+  - 实现 detect_warnings() 函数
+  - 集成警告检测到进程收集流程
+
+- `excalibur/src/modules/proctrace/ui.rs` (+32 lines)
+  - 修改进程表格：新增 Warnings 列
+  - 修改详情面板：显示警告详情
+  - 彩色警告渲染
+
+### 性能考虑
+
+- **零性能开销**: 警告检测在进程收集阶段完成，无额外扫描
+- **内存效率**: 使用 Vec 存储警告，大多数进程无警告（空 Vec）
+- **计算复杂度**: O(1) 每个警告检测，总计 4 次简单比较
+
+### 代码统计
+
+- **新增代码**: ~116 行 Rust
+- **编译时间**: 15.75 秒 (release)
+- **二进制大小**: 无明显增加
+
+### 测试建议
+
+用户可通过以下方式验证警告系统：
+
+1. **Root 进程**: 查看 PID 1 (systemd/init)，应显示 "⚠ ROOT"
+2. **高 CPU**: 运行 `stress-ng --cpu 1` 创建高 CPU 进程
+3. **高内存**: 运行占用 >1GB 内存的程序
+4. **长运行时间**: 系统启动进程应显示 "⚠ LONG_UPTIME"
+
+### 已知限制和未来扩展
+
+**当前版本限制**:
+- 内存阈值固定为 1GB（未来可配置）
+- CPU 阈值固定为 80%（未来可配置）
+- 不支持公网绑定检测（需要网络连接分析）
+
+**未来可扩展的警告**:
+- ⚠ PUBLIC_BIND - 监听 0.0.0.0 端口
+- ⚠ HIGH_RESTART - 频繁重启
+- ⚠ ZOMBIE - 僵尸进程
+- ⚠ DEFUNCT - 失效进程
+
+### 提交信息
+
+- **Commit**: 079e742
+- **Branch**: AddProcTrace
+- **Files Changed**: 2 files, +121 insertions, -5 deletions
+- **测试状态**: ✅ 编译通过，安装成功
+
+### 总结
+
+警告系统为 Process Tracer 增加了重要的安全和性能监控能力：
+- ✅ 快速识别以 root 运行的进程（安全风险）
+- ✅ 实时发现高 CPU/内存使用进程（性能问题）
+- ✅ 追踪长时间运行进程（系统健康）
+- ✅ 彩色视觉提示，信息一目了然
+- ✅ 零性能开销，无侵入式集成
+
+实现简洁高效，符合 Rust 最佳实践，为用户提供实用的系统诊断工具。
