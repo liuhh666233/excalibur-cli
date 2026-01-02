@@ -1470,3 +1470,58 @@ PID    Name                          User   CPU%   Memory     Warnings
 - ✅ 代码简洁,易于维护
 
 这个功能使 Process Tracer 成为真正的"Why Is This Running?"工具,帮助用户快速理解系统进程架构和服务依赖关系。
+
+### 后续改进: 自动展开根节点 (2026-01-02)
+
+**问题**: 初次实现后发现,进入树视图时只能看到 systemd 和 kthreadd 两个根进程,所有子进程都不可见。
+
+**原因分析**:
+- 所有节点初始化时 `is_expanded: false` (折叠状态)
+- `rebuild_visible_nodes()` 只显示已展开节点的子进程
+- 用户需要手动按 Enter/Space 展开每个节点才能看到子进程
+- 造成极差的初次体验,树看起来"空空如也"
+
+**解决方案**:
+在 `build_tree()` 中识别根节点后,自动将其设置为展开状态:
+
+```rust
+// Auto-expand root nodes for better initial visibility
+for root_pid in &self.tree_roots.clone() {
+    if let Some(node) = self.tree_nodes.get_mut(root_pid) {
+        node.is_expanded = true;
+    }
+}
+```
+
+**效果对比**:
+
+修复前 (只显示根节点):
+```
+PID    Name                    User   CPU%   Memory
+1      [+] systemd             0      0.1%   12.3 MB
+2      [+] kthreadd            0      0.0%   0 B
+```
+
+修复后 (自动展开一层):
+```
+PID    Name                    User   CPU%   Memory
+1      [-] systemd             0      0.1%   12.3 MB
+234    ├─  [+] systemd-journal 0      0.2%   8.5 MB
+567    ├─  [+] dbus-daemon     1001   0.1%   3.2 MB
+890    └─  [+] NetworkManager  0      0.3%   15.1 MB
+2      [-] kthreadd            0      0.0%   0 B
+3      ├─      rcu_gp          0      0.0%   0 B
+4      ├─      rcu_par_gp      0      0.0%   0 B
+5      └─      [+] kworker...  0      0.0%   0 B
+```
+
+**提交信息**:
+- **Commit**: 3a6bd46
+- **Message**: "Fix process tree: auto-expand root nodes for better visibility"
+- **测试**: ✅ 编译通过，进入树视图立即可见进程层级
+
+**启示**:
+- 默认状态要考虑首次用户体验
+- 空白界面会让用户困惑功能是否正常工作
+- 适度的自动展开可以引导用户理解功能
+- 用户仍可手动折叠不需要的分支
