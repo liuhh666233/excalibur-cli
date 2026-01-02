@@ -102,18 +102,26 @@ fn render_process_table(state: &ProcessTracerState, area: Rect, buf: &mut Buffer
         .iter()
         .map(|&idx| {
             let proc = &state.processes[idx];
+
+            // Format warnings
+            let warning_symbols: Vec<&str> = proc.warnings.iter()
+                .map(|w| w.symbol())
+                .collect();
+            let warnings_str = warning_symbols.join(" ");
+
             Row::new(vec![
                 proc.pid.to_string(),
                 proc.name.clone(),
                 proc.user.clone(),
                 format!("{:.1}%", proc.cpu_percent),
                 proc.memory_str(),
+                warnings_str,
             ])
         })
         .collect();
 
     // Create table
-    let header = Row::new(vec!["PID", "Name", "User", "CPU%", "Memory"])
+    let header = Row::new(vec!["PID", "Name", "User", "CPU%", "Memory", "Warnings"])
         .style(
             Style::default()
                 .fg(Color::Yellow)
@@ -127,10 +135,11 @@ fn render_process_table(state: &ProcessTracerState, area: Rect, buf: &mut Buffer
         rows,
         [
             Constraint::Length(8),
-            Constraint::Min(20),
+            Constraint::Min(15),
             Constraint::Length(10),
             Constraint::Length(8),
             Constraint::Length(12),
+            Constraint::Min(10),
         ],
     )
     .header(header)
@@ -174,7 +183,7 @@ fn render_details_panel(state: &ProcessTracerState, area: Rect, buf: &mut Buffer
             Supervisor::Unknown => "unknown".to_string(),
         };
 
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled("Command: ", Style::default().fg(Color::Cyan)),
                 Span::raw(&cmdline_display),
@@ -196,6 +205,28 @@ fn render_details_panel(state: &ProcessTracerState, area: Rect, buf: &mut Buffer
                 Span::raw(supervisor_str),
             ]),
         ];
+
+        // Add warnings if any
+        if !proc.warnings.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("Warnings: ", Style::default().fg(Color::Red)),
+            ]));
+
+            for warning in &proc.warnings {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        warning.symbol(),
+                        Style::default().fg(warning.color()),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        warning.description(),
+                        Style::default().fg(Color::Gray),
+                    ),
+                ]));
+            }
+        }
 
         let details = Paragraph::new(lines).block(
             Block::bordered()

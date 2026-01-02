@@ -12,6 +12,48 @@ pub enum Supervisor {
     Unknown,
 }
 
+/// Warning types for processes
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProcessWarning {
+    RunningAsRoot,
+    HighCpu { percent: f32 },
+    HighMemory { gb: f64 },
+    LongUptime { days: u64 },
+}
+
+impl ProcessWarning {
+    /// Get warning symbol
+    pub fn symbol(&self) -> &str {
+        match self {
+            ProcessWarning::RunningAsRoot => "⚠ ROOT",
+            ProcessWarning::HighCpu { .. } => "⚠ HIGH_CPU",
+            ProcessWarning::HighMemory { .. } => "⚠ HIGH_MEM",
+            ProcessWarning::LongUptime { .. } => "⚠ LONG_UPTIME",
+        }
+    }
+
+    /// Get warning description
+    pub fn description(&self) -> String {
+        match self {
+            ProcessWarning::RunningAsRoot => "Running as root".to_string(),
+            ProcessWarning::HighCpu { percent } => format!("High CPU usage: {:.1}%", percent),
+            ProcessWarning::HighMemory { gb } => format!("High memory usage: {:.1} GB", gb),
+            ProcessWarning::LongUptime { days } => format!("Long uptime: {} days", days),
+        }
+    }
+
+    /// Get warning color (for ratatui)
+    pub fn color(&self) -> ratatui::style::Color {
+        use ratatui::style::Color;
+        match self {
+            ProcessWarning::RunningAsRoot => Color::Red,
+            ProcessWarning::HighCpu { .. } => Color::Yellow,
+            ProcessWarning::HighMemory { .. } => Color::Yellow,
+            ProcessWarning::LongUptime { .. } => Color::Cyan,
+        }
+    }
+}
+
 /// Process information
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
@@ -24,6 +66,7 @@ pub struct ProcessInfo {
     pub memory_rss: u64,      // bytes
     pub start_time: u64,      // timestamp (seconds since epoch)
     pub supervisor: Supervisor,
+    pub warnings: Vec<ProcessWarning>,
 }
 
 impl ProcessInfo {
@@ -142,7 +185,8 @@ impl ProcessCollector {
         // Detect supervisor
         let supervisor = detect_supervisor(pid);
 
-        Ok(ProcessInfo {
+        // Create info struct
+        let mut info = ProcessInfo {
             pid,
             ppid,
             name,
@@ -152,7 +196,13 @@ impl ProcessCollector {
             memory_rss,
             start_time,
             supervisor,
-        })
+            warnings: Vec::new(),
+        };
+
+        // Detect warnings
+        info.warnings = detect_warnings(&info);
+
+        Ok(info)
     }
 
     /// Calculate CPU percentage based on delta
@@ -250,4 +300,39 @@ fn detect_supervisor(pid: u32) -> Supervisor {
     }
 
     Supervisor::Shell
+}
+
+/// Detect warnings for a process
+fn detect_warnings(info: &ProcessInfo) -> Vec<ProcessWarning> {
+    let mut warnings = Vec::new();
+
+    // Check root privileges (UID 0)
+    if info.user == "0" {
+        warnings.push(ProcessWarning::RunningAsRoot);
+    }
+
+    // Check high CPU (> 80%)
+    if info.cpu_percent > 80.0 {
+        warnings.push(ProcessWarning::HighCpu {
+            percent: info.cpu_percent,
+        });
+    }
+
+    // Check high memory (> 1GB = 1073741824 bytes)
+    let memory_gb = info.memory_rss as f64 / 1073741824.0;
+    if memory_gb > 1.0 {
+        warnings.push(ProcessWarning::HighMemory { gb: memory_gb });
+    }
+
+    // Check long uptime (> 90 days)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let uptime_days = (now.saturating_sub(info.start_time)) / 86400;
+    if uptime_days > 90 {
+        warnings.push(ProcessWarning::LongUptime { days: uptime_days });
+    }
+
+    warnings
 }
