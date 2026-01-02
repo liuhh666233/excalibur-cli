@@ -1,6 +1,6 @@
 use super::collector::ProcessInfo;
 use ratatui::widgets::TableState;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 /// Input mode for the process tracer
@@ -124,20 +124,51 @@ impl ProcessTracerState {
 
     /// Update process list
     pub fn update_processes(&mut self, processes: Vec<ProcessInfo>) {
+        // Save currently selected PID to restore after refresh
+        let selected_pid = if self.view_mode == ViewMode::Tree {
+            self.visible_tree_nodes.get(self.selected_index).copied()
+        } else {
+            self.filtered_indices
+                .get(self.selected_index)
+                .and_then(|&idx| self.processes.get(idx))
+                .map(|proc| proc.pid)
+        };
+
         self.processes = processes;
         self.apply_filters();
         self.apply_sort();
 
-        // Keep selection valid
+        // Rebuild tree if in tree view
+        if self.view_mode == ViewMode::Tree {
+            self.build_tree();
+        }
+
+        // Restore selection to same PID if it still exists
+        if let Some(pid) = selected_pid {
+            if self.view_mode == ViewMode::Tree {
+                // Find PID in visible tree nodes
+                if let Some(new_index) = self.visible_tree_nodes.iter().position(|&p| p == pid) {
+                    self.selected_index = new_index;
+                    self.table_state.select(Some(new_index));
+                    return;
+                }
+            } else {
+                // Find PID in filtered list
+                for (i, &idx) in self.filtered_indices.iter().enumerate() {
+                    if self.processes.get(idx).map(|p| p.pid) == Some(pid) {
+                        self.selected_index = i;
+                        self.table_state.select(Some(i));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Keep selection valid (fallback if PID not found)
         if self.selected_index >= self.filtered_indices.len() && !self.filtered_indices.is_empty()
         {
             self.selected_index = self.filtered_indices.len() - 1;
             self.table_state.select(Some(self.selected_index));
-        }
-
-        // Rebuild tree if in tree view
-        if self.view_mode == ViewMode::Tree {
-            self.build_tree();
         }
     }
 
@@ -278,6 +309,14 @@ impl ProcessTracerState {
 
     /// Build process tree from flat process list
     pub fn build_tree(&mut self) {
+        // Save current expansion state before rebuilding
+        let expanded_pids: HashSet<u32> = self
+            .tree_nodes
+            .iter()
+            .filter(|(_, node)| node.is_expanded)
+            .map(|(pid, _)| *pid)
+            .collect();
+
         self.tree_nodes.clear();
         self.tree_roots.clear();
 
@@ -287,12 +326,12 @@ impl ProcessTracerState {
             pid_to_idx.insert(proc.pid, idx);
         }
 
-        // Build parent-child relationships
+        // Build parent-child relationships, restore expansion state
         for (idx, proc) in self.processes.iter().enumerate() {
             let node = ProcessTreeNode {
                 process_idx: idx,
                 children: Vec::new(),
-                is_expanded: false,
+                is_expanded: expanded_pids.contains(&proc.pid),
                 depth: 0,
             };
             self.tree_nodes.insert(proc.pid, node);
@@ -311,10 +350,12 @@ impl ProcessTracerState {
             }
         }
 
-        // Auto-expand root nodes for better initial visibility
-        for root_pid in &self.tree_roots.clone() {
-            if let Some(node) = self.tree_nodes.get_mut(root_pid) {
-                node.is_expanded = true;
+        // Auto-expand root nodes only on first build (when no expansion state exists)
+        if expanded_pids.is_empty() {
+            for root_pid in &self.tree_roots.clone() {
+                if let Some(node) = self.tree_nodes.get_mut(root_pid) {
+                    node.is_expanded = true;
+                }
             }
         }
 
