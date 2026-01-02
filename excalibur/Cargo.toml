@@ -16,6 +16,8 @@ chrono = "0.4"
 arboard = "3.4"
 dirs = "5.0"
 clap = { version = "4.5", features = ["derive"] }
+procfs = "0.17"
+num_cpus = "1.16"
 
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
 [profile.release]

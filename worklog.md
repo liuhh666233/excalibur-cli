@@ -488,3 +488,604 @@ set -l selected_cmd (command excalibur h 2>/dev/null)
 1. 在 Fish shell 中运行 `exh` 命令
 2. 或按 `Ctrl+R` 快捷键
 3. 确认直接进入 history 模块而非主菜单
+
+---
+
+## [2026-01-02] 新模块规划：进程追踪器 (Process Tracer)
+
+### 背景
+
+受 [witr](https://github.com/pranshuparmar/witr) (Why Is This Running?) 项目启发，计划在 Excalibur 中实现一个进程追踪模块，用于诊断和分析系统进程。
+
+### witr 功能分析
+
+**核心理念**：
+witr 回答一个核心问题："为什么这个进程在运行？"
+
+传统工具（ps, top, lsof, systemctl）只显示进程状态，用户需要手动关联多个工具的输出来推断因果关系。witr 将这种因果关系明确化，一次性展示完整的进程启动链。
+
+**主要功能**：
+1. **多种查询方式**
+   - 按进程/服务名查询：`witr node`
+   - 按 PID 查询：`witr --pid 14233`
+   - 按端口查询：`witr --port 5000`
+
+2. **因果链追踪**
+   - 展示完整的进程祖先链
+   - 识别 supervisor 系统（systemd, docker, pm2, cron, launchd 等）
+   - 显示进程如何被启动、由谁维护
+
+3. **上下文信息**
+   - 工作目录
+   - Git 仓库信息
+   - 容器元数据（Docker/Kubernetes）
+   - 网络绑定详情
+
+4. **警告系统**
+   - Root 权限运行
+   - 公网绑定（0.0.0.0 或 ::）
+   - 高重启次数
+   - 高内存使用（>1GB RSS）
+   - 长运行时间（>90天）
+
+5. **多种输出格式**
+   - 标准详细输出（单屏聚焦）
+   - 简短格式（一行摘要）
+   - 树状格式（完整进程树）
+   - JSON 输出
+   - 仅警告模式
+
+**技术实现**：
+- **语言**: Go
+- **数据源**:
+  - Linux: `/proc` 文件系统
+  - macOS: `ps`, `lsof`, `sysctl` 命令
+- **架构**: 将所有查询（端口、服务、容器）统一为 PID 问题，然后构建因果链
+
+### Rust 实现方案
+
+#### 核心数据结构
+
+```rust
+// 进程基本信息
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    pub name: String,
+    pub exe_path: PathBuf,
+    pub cmdline: Vec<String>,
+    pub user: String,
+    pub start_time: SystemTime,
+    pub memory_rss: u64,
+    pub status: ProcessStatus,
+}
+
+// 进程祖先链
+pub struct ProcessChain {
+    pub target: ProcessInfo,
+    pub ancestors: Vec<ProcessInfo>,
+    pub supervisor: Option<SupervisorInfo>,
+}
+
+// Supervisor 信息
+pub enum SupervisorType {
+    Systemd { unit: String },
+    Docker { container_id: String, image: String },
+    Cron { cron_entry: String },
+    PM2 { app_name: String },
+    Launchd { plist: String },
+    Shell { shell_type: String },
+    Unknown,
+}
+
+pub struct SupervisorInfo {
+    pub supervisor_type: SupervisorType,
+    pub pid: u32,
+}
+
+// 上下文信息
+pub struct ContextInfo {
+    pub cwd: Option<PathBuf>,
+    pub git_repo: Option<GitInfo>,
+    pub network_bindings: Vec<NetworkBinding>,
+    pub environment: HashMap<String, String>,
+}
+
+// 网络绑定
+pub struct NetworkBinding {
+    pub protocol: String,  // TCP/UDP
+    pub local_addr: String,
+    pub local_port: u16,
+    pub remote_addr: Option<String>,
+    pub state: String,
+}
+
+// 警告类型
+pub enum ProcessWarning {
+    RunningAsRoot,
+    PublicBinding { port: u16, addr: String },
+    HighMemory { rss_mb: u64 },
+    HighRestarts { count: u32 },
+    LongUptime { days: u64 },
+}
+
+// Git 信息
+pub struct GitInfo {
+    pub repo_path: PathBuf,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+}
+```
+
+#### 所需 Rust Crates
+
+```toml
+[dependencies]
+# 跨平台进程信息
+sysinfo = "0.32"
+
+# Linux 特定 - /proc 文件系统解析
+procfs = "0.17"
+
+# Unix 系统调用
+nix = { version = "0.29", features = ["process", "user"] }
+
+# 正则表达式 - supervisor 识别
+regex = "1.11"
+
+# 序列化 - JSON 输出
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 时间处理
+chrono = "0.4"
+
+# 已有依赖
+ratatui = "0.29"  # TUI
+crossterm = "0.28"  # 终端控制
+```
+
+#### 模块架构
+
+```
+excalibur/src/modules/process_tracer/
+├── mod.rs              # 模块入口，实现 Module trait
+├── state.rs            # UI 状态管理
+├── ui.rs               # TUI 渲染
+├── collector.rs        # 进程信息收集
+├── analyzer.rs         # 进程链分析
+├── supervisor.rs       # Supervisor 识别
+├── warnings.rs         # 警告系统
+└── platform/
+    ├── mod.rs
+    ├── linux.rs        # Linux 特定实现
+    └── macos.rs        # macOS 特定实现（可选）
+```
+
+#### 实现步骤
+
+**阶段 1: 基础进程信息收集** (1-2天)
+1. 使用 `sysinfo` 或 `procfs` 获取进程列表
+2. 实现 PID 查询、进程名查询
+3. 构建进程树（parent-child 关系）
+4. 获取基本元数据（cmdline, user, memory, start_time）
+
+**阶段 2: Supervisor 识别** (2-3天)
+1. 检测 systemd 单元（读取 `/proc/<pid>/cgroup`）
+2. 检测 Docker 容器（cgroup 中的 docker 标识）
+3. 检测常见进程管理器（pm2, supervisor, etc.）
+4. 检测 cron 任务（检查 ppid 是否为 cron）
+5. 模式匹配识别其他 supervisor
+
+**阶段 3: 上下文信息** (1-2天)
+1. 读取工作目录（`/proc/<pid>/cwd`）
+2. 检测 Git 仓库（向上查找 `.git`）
+3. 解析网络连接（`/proc/<pid>/net/tcp`, `/proc/<pid>/net/udp`）
+4. 环境变量（`/proc/<pid>/environ`）
+
+**阶段 4: 警告系统** (1天)
+1. 检测 root 权限运行
+2. 检测公网绑定（0.0.0.0, ::）
+3. 高内存使用阈值检查
+4. 运行时间计算
+5. （可选）重启计数 - 需要持久化
+
+**阶段 5: TUI 界面** (2-3天)
+1. 搜索界面（输入 PID/进程名/端口）
+2. 进程列表显示
+3. 详细信息面板
+4. 进程树可视化
+5. 交互式导航（上下选择、展开折叠）
+
+**阶段 6: 集成到 Excalibur** (1天)
+1. 添加 `ModuleId::ProcessTracer`
+2. 实现 `Module` trait
+3. 注册到 `ModuleManager`
+4. 添加 CLI 子命令 `excalibur proc` 或 `excalibur p`
+5. 更新文档
+
+### 技术难点和解决方案
+
+#### 1. 跨平台支持
+
+**问题**: Linux 和 macOS 获取进程信息方式不同
+
+**解决方案**:
+- 使用 trait 抽象平台特定操作
+- Linux: 直接读取 `/proc`
+- macOS: 第一版可以不支持，或使用 `sysinfo` 提供基础功能
+- 使用条件编译 `#[cfg(target_os = "linux")]`
+
+```rust
+trait PlatformCollector {
+    fn get_process_info(&self, pid: u32) -> Result<ProcessInfo>;
+    fn get_process_tree(&self) -> Result<Vec<ProcessInfo>>;
+    fn get_network_bindings(&self, pid: u32) -> Result<Vec<NetworkBinding>>;
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxCollector;
+
+#[cfg(target_os = "macos")]
+struct MacOSCollector;
+```
+
+#### 2. Supervisor 识别准确性
+
+**问题**: 如何准确识别进程的 supervisor？
+
+**解决方案**:
+1. **cgroup 解析** (Linux):
+   ```
+   /proc/<pid>/cgroup 内容示例：
+   12:pids:/system.slice/docker-abc123.scope
+   -> 识别为 Docker
+
+   11:cpuset:/system.slice/mysqld.service
+   -> 识别为 systemd unit: mysqld.service
+   ```
+
+2. **进程名模式匹配**:
+   - 父进程名包含 `pm2`, `node` -> PM2
+   - 父进程名为 `cron`, `crond` -> Cron
+   - 父进程为 `/sbin/init` 或 `systemd` -> Systemd
+
+3. **环境变量检查**:
+   - `PM2_HOME` -> PM2
+   - `KUBERNETES_SERVICE_HOST` -> Kubernetes Pod
+
+#### 3. 网络端口映射
+
+**问题**: 如何将端口映射到进程？
+
+**解决方案**:
+- Linux: 解析 `/proc/net/tcp` 和 `/proc/<pid>/fd/*`
+- 找到监听端口的 socket inode
+- 遍历所有进程的 fd，匹配 inode
+
+```rust
+// 伪代码
+fn find_process_by_port(port: u16) -> Option<u32> {
+    // 1. 从 /proc/net/tcp 找到对应端口的 inode
+    let inode = parse_proc_net_tcp(port)?;
+
+    // 2. 遍历所有进程的 /proc/<pid>/fd/
+    for pid in all_pids() {
+        for fd in read_dir(format!("/proc/{}/fd", pid)) {
+            if fd_inode(fd) == inode {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+```
+
+或者使用 `sysinfo` crate 的高级 API 简化。
+
+#### 4. 性能优化
+
+**问题**: 遍历所有进程可能很慢
+
+**解决方案**:
+1. **按需加载**: 只在用户查询时收集详细信息
+2. **缓存**: 缓存进程列表，定期刷新（每 1-2 秒）
+3. **懒加载**: 先显示基本信息，后台异步加载详细信息
+4. **索引**: 为常见查询（PID, 名称, 端口）建立索引
+
+### UI/UX 设计
+
+#### 主界面布局
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Process Tracer - Excalibur                       [?] Help│
+├─────────────────────────────────────────────────────────┤
+│ Search: nginx                                   [Ctrl+S]│
+├─────────────────────────────────────────────────────────┤
+│ Results (3 matches):                                    │
+│                                                         │
+│ ▸ nginx: master process (PID 1234)                     │
+│   ├─ nginx: worker process (PID 1235)                  │
+│   └─ nginx: worker process (PID 1236)                  │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│ Details - nginx (PID 1234)                              │
+├─────────────────────────────────────────────────────────┤
+│ Process:                                                │
+│   PID:      1234                                        │
+│   PPID:     1 (systemd)                                 │
+│   User:     root                            ⚠ WARNING  │
+│   Command:  nginx -g daemon off;                        │
+│   Started:  2025-12-29 10:23:45 (4d 5h ago)             │
+│   Memory:   45.2 MB                                     │
+│                                                         │
+│ Why It Exists:                                          │
+│   systemd (PID 1)                                       │
+│     └─ nginx.service                                    │
+│                                                         │
+│ Source: systemd                                         │
+│   Unit:  nginx.service                                  │
+│   Status: active (running)                              │
+│                                                         │
+│ Network:                                                │
+│   0.0.0.0:80  -> LISTEN                     ⚠ PUBLIC   │
+│   0.0.0.0:443 -> LISTEN                     ⚠ PUBLIC   │
+│                                                         │
+│ Context:                                                │
+│   CWD:  /etc/nginx                                      │
+│                                                         │
+│ Warnings:                                               │
+│   ⚠ Running as root                                     │
+│   ⚠ Listening on public interface (0.0.0.0)             │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+[j/k] Navigate  [Enter] Details  [t] Tree View  [/] Search  [q] Quit
+```
+
+#### 交互方式
+
+1. **搜索模式** (`/` 或启动时):
+   - 输入 PID、进程名或端口号
+   - 实时过滤结果
+
+2. **列表导航** (`j`/`k` 或方向键):
+   - 上下选择进程
+   - `Enter` 查看详细信息
+   - `t` 切换树状视图
+
+3. **详细视图**:
+   - 显示完整信息
+   - 可滚动查看
+   - `Esc` 返回列表
+
+4. **树状视图** (`t`):
+   - 显示完整进程树
+   - 展开/折叠分支
+   - 高亮当前选中进程
+
+### CLI 集成
+
+```bash
+# 通过子命令进入
+excalibur proc
+excalibur p        # 快捷方式
+
+# 或在主菜单选择
+excalibur
+> Process Tracer   # 选择模块
+```
+
+### 与 History 模块的协同
+
+可以考虑未来集成：
+- 从 History 模块的命令中提取进程名
+- 快速跳转到 Process Tracer 查看该进程
+- 例如：在 History 中选中 `nginx -s reload`，按某个键跳转到 Process Tracer 查看 nginx 进程
+
+### 时间估算
+
+| 阶段 | 任务 | 预计时间 |
+|------|------|----------|
+| 1 | 基础进程信息收集 | 1-2 天 |
+| 2 | Supervisor 识别 | 2-3 天 |
+| 3 | 上下文信息 | 1-2 天 |
+| 4 | 警告系统 | 1 天 |
+| 5 | TUI 界面 | 2-3 天 |
+| 6 | 集成到 Excalibur | 1 天 |
+| **总计** | | **8-12 天** |
+
+### 参考资源
+
+1. **witr 项目**: https://github.com/pranshuparmar/witr
+2. **procfs crate**: https://docs.rs/procfs/
+3. **sysinfo crate**: https://docs.rs/sysinfo/
+4. **Linux /proc 文档**: https://man7.org/linux/man-pages/man5/proc.5.html
+5. **systemd cgroup**: https://www.freedesktop.org/wiki/Software/systemd/
+
+### 下一步行动
+
+请确认以下问题：
+
+1. **范围确认**:
+   - 是否只支持 Linux？还是也需要 macOS 支持？
+   - 第一版是否只实现核心功能（进程查询、进程树、基本 supervisor 识别）？
+
+2. **优先级**:
+   - 哪些功能最重要？（进程树 vs 网络端口 vs Git 信息）
+   - 是否需要端口查询功能？
+
+3. **UI 偏好**:
+   - 是否喜欢上面的 UI 设计？
+   - 有其他交互方式的想法吗？
+
+4. **开始方式**:
+   - 是否现在开始实现？
+   - 还是先创建详细的技术规格文档？
+
+我可以开始实现这个模块，或者先回答你的任何问题。
+
+---
+
+## [2026-01-02] 功能实现：进程追踪器模块 (Process Tracer)
+
+### 实施总结
+
+**状态**: ✅ 完成
+
+成功实现了 Process Tracer 模块，提供交互式进程监控和 supervisor 检测功能。
+
+### 实现内容
+
+**1. 核心功能**
+- ✅ 实时进程列表显示（1秒自动刷新）
+- ✅ 进程信息：PID、名称、用户、CPU%、内存
+- ✅ 进程详情面板：命令行、父进程、用户、运行时间、supervisor
+- ✅ Supervisor 检测：Systemd、Docker、Shell
+- ✅ 搜索过滤功能（按进程名）
+- ✅ 多种排序模式：CPU、内存、PID、名称
+- ✅ 完整的键盘导航
+
+**2. 技术实现**
+
+**新增依赖** (Cargo.toml):
+- `procfs = "0.17"` - Linux /proc 文件系统解析
+- `num_cpus = "1.16"` - CPU 核心数检测
+
+**模块结构** (excalibur/src/modules/proctrace/):
+```
+proctrace/
+├── mod.rs          - ProcessTracerModule (实现 Module trait)
+├── state.rs        - ProcessTracerState (状态管理)
+├── ui.rs           - TUI 渲染
+└── collector.rs    - 进程信息收集和 supervisor 检测
+```
+
+**关键数据结构**:
+```rust
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    pub name: String,
+    pub cmdline: Vec<String>,
+    pub user: String,
+    pub cpu_percent: f32,
+    pub memory_rss: u64,
+    pub start_time: u64,
+    pub supervisor: Supervisor,
+}
+
+pub enum Supervisor {
+    Systemd { unit: String },
+    Docker { container_id: String },
+    Shell,
+    Unknown,
+}
+```
+
+**3. Supervisor 检测机制**
+
+通过解析 `/proc/[pid]/cgroup` 实现：
+- **Systemd**: 识别 `*.service` 文件，提取 unit 名称
+- **Docker**: 识别 `/docker/` 路径，提取容器 ID
+- **Shell/Unknown**: 基于父进程判断
+
+**4. UI 设计**
+
+5 区域布局：
+```
+┌─────────────────────────────────────────────┐
+│ Header: 标题 + 进程计数                      │ (3行)
+├─────────────────────────────────────────────┤
+│ Search Bar: 搜索输入框                       │ (3行)
+├─────────────────────────────────────────────┤
+│ Process Table: PID | Name | User | CPU | Mem│ (可变)
+├─────────────────────────────────────────────┤
+│ Details Panel: 选中进程的详细信息             │ (7行)
+├─────────────────────────────────────────────┤
+│ Status Bar: 快捷键帮助                       │ (3行)
+└─────────────────────────────────────────────┘
+```
+
+**5. 键盘快捷键**
+
+| 键位 | 功能 |
+|------|------|
+| `j/k`, `↑/↓` | 上下导航 |
+| `g/G` | 跳到首/末进程 |
+| `PageUp/Down` | 快速翻页（10行） |
+| `/` | 进入搜索模式 |
+| `s` | 循环切换排序模式 |
+| `r` | 强制刷新进程列表 |
+| `Esc`, `q` | 退出模块 |
+
+**6. CLI 集成**
+
+新增子命令：
+```bash
+excalibur process-tracer    # 完整命令
+excalibur pt                # 快捷别名
+```
+
+帮助信息：
+```
+$ excalibur --help
+Commands:
+  history         Browse and search shell command history [aliases: h]
+  process-tracer  Inspect running processes and their supervisors [aliases: pt]
+  help            Print this message or the help of the given subcommand(s)
+```
+
+### 修改文件清单
+
+**新增文件**:
+- `excalibur/src/modules/proctrace/mod.rs` (217行)
+- `excalibur/src/modules/proctrace/state.rs` (207行)
+- `excalibur/src/modules/proctrace/ui.rs` (204行)
+- `excalibur/src/modules/proctrace/collector.rs` (221行)
+
+**修改文件**:
+- `excalibur/Cargo.toml` - 添加 procfs 和 num_cpus 依赖
+- `excalibur/src/modules/mod.rs` - 添加 ModuleId::ProcessTracer
+- `excalibur/src/modules/manager.rs` - 注册 ProcessTracerModule
+- `excalibur/src/main.rs` - 添加 ProcessTracer CLI 子命令
+
+### 性能优化
+
+1. **增量更新**: 仅每秒刷新一次进程列表
+2. **CPU 计算**: 基于 delta 计算 CPU 使用率（避免瞬时值）
+3. **索引过滤**: 使用 filtered_indices 而非克隆数据
+4. **错误处理**: 优雅处理权限错误（某些进程不可读）
+
+### 测试结果
+
+- ✅ 编译成功 (仅有 history 模块的遗留警告)
+- ✅ 模块加载：`excalibur pt` 启动正常
+- ✅ Help 命令显示新模块
+- ✅ 二进制已安装到 `~/.cargo/bin/excalibur`
+
+### 已知限制
+
+**第一版只支持 Linux**，未来可扩展：
+- macOS 支持（需要不同的数据源）
+- 进程树视图
+- 网络连接显示
+- 进程操作（kill、发送信号）
+- 更多 supervisor 类型（PM2、Cron 等）
+- 警告系统（高 CPU、root 运行等）
+
+### 代码统计
+
+- **总新增代码**: ~850 行 Rust
+- **依赖增加**: 2 个 crate (procfs, num_cpus)
+- **编译时间**: ~21 秒 (release)
+- **二进制大小**: 待测量（使用 strip = true 优化）
+
+### 下一步
+
+模块已完全可用，可通过以下方式测试：
+```bash
+excalibur pt            # 启动进程追踪器
+```
+
+或在主菜单中选择 "Process Tracer"。
