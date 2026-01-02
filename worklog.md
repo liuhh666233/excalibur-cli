@@ -1525,3 +1525,200 @@ PID    Name                    User   CPU%   Memory
 - 空白界面会让用户困惑功能是否正常工作
 - 适度的自动展开可以引导用户理解功能
 - 用户仍可手动折叠不需要的分支
+
+### 关键改进: 保存展开状态和选中进程 (2026-01-02)
+
+**用户反馈的严重 UX 问题**:
+1. 树视图是整体层面展开的吗？ (是否应该基于选中进程展开？)
+2. **自动刷新会影响界面操作** - 最严重的问题
+
+**问题根源分析**:
+
+```rust
+// update() 每秒调用
+pub fn update(&mut self) -> Result<()> {
+    if self.state.last_update.elapsed() >= Duration::from_secs(1) {
+        self.state.update_processes(processes);  // 每秒刷新
+    }
+}
+
+// update_processes 每次都重建树
+pub fn update_processes(&mut self, processes: Vec<ProcessInfo>) {
+    if self.view_mode == ViewMode::Tree {
+        self.build_tree();  // 重建树
+    }
+}
+
+// build_tree 清空所有状态！
+pub fn build_tree(&mut self) {
+    self.tree_nodes.clear();  // ❌ 丢失所有用户展开的节点
+    self.tree_roots.clear();
+
+    // 所有节点重新创建为折叠状态
+    let node = ProcessTreeNode {
+        is_expanded: false,  // ❌ 用户手动展开的也变回折叠
+        ...
+    };
+}
+```
+
+**用户体验灾难**:
+- 用户手动展开一个节点查看子进程
+- 1 秒后自动刷新
+- 所有展开状态丢失，树又缩回只显示根节点
+- 用户不断与程序"对抗"，刚展开又被折叠
+- **完全无法正常使用树视图**
+
+**解决方案 1: 保存和恢复展开状态**
+
+```rust
+pub fn build_tree(&mut self) {
+    // 1. 刷新前保存哪些节点是展开的
+    let expanded_pids: HashSet<u32> = self
+        .tree_nodes
+        .iter()
+        .filter(|(_, node)| node.is_expanded)
+        .map(|(pid, _)| *pid)
+        .collect();
+
+    self.tree_nodes.clear();
+    self.tree_roots.clear();
+
+    // 2. 重建时恢复展开状态
+    for (idx, proc) in self.processes.iter().enumerate() {
+        let node = ProcessTreeNode {
+            is_expanded: expanded_pids.contains(&proc.pid),  // ✅ 恢复状态
+            ...
+        };
+        self.tree_nodes.insert(proc.pid, node);
+    }
+
+    // 3. 智能自动展开：仅首次构建时展开根节点
+    if expanded_pids.is_empty() {  // ✅ 首次进入
+        for root_pid in &self.tree_roots.clone() {
+            if let Some(node) = self.tree_nodes.get_mut(root_pid) {
+                node.is_expanded = true;
+            }
+        }
+    }
+    // ✅ 后续刷新完全尊重用户的展开选择
+}
+```
+
+**解决方案 2: 保存和恢复选中进程**
+
+```rust
+pub fn update_processes(&mut self, processes: Vec<ProcessInfo>) {
+    // 1. 刷新前保存选中的进程 PID
+    let selected_pid = if self.view_mode == ViewMode::Tree {
+        self.visible_tree_nodes.get(self.selected_index).copied()
+    } else {
+        self.filtered_indices
+            .get(self.selected_index)
+            .and_then(|&idx| self.processes.get(idx))
+            .map(|proc| proc.pid)
+    };
+
+    self.processes = processes;
+    self.apply_filters();
+    self.apply_sort();
+
+    if self.view_mode == ViewMode::Tree {
+        self.build_tree();
+    }
+
+    // 2. 刷新后找到相同 PID，恢复选中
+    if let Some(pid) = selected_pid {
+        if self.view_mode == ViewMode::Tree {
+            if let Some(new_index) = self.visible_tree_nodes.iter().position(|&p| p == pid) {
+                self.selected_index = new_index;  // ✅ 恢复到相同进程
+                self.table_state.select(Some(new_index));
+                return;
+            }
+        } else {
+            for (i, &idx) in self.filtered_indices.iter().enumerate() {
+                if self.processes.get(idx).map(|p| p.pid) == Some(pid) {
+                    self.selected_index = i;
+                    self.table_state.select(Some(i));
+                    return;
+                }
+            }
+        }
+    }
+
+    // 3. Fallback: 进程消失时保持索引有效
+    if self.selected_index >= self.filtered_indices.len() && !self.filtered_indices.is_empty() {
+        self.selected_index = self.filtered_indices.len() - 1;
+        self.table_state.select(Some(self.selected_index));
+    }
+}
+```
+
+**修复效果对比**:
+
+修复前:
+```
+用户操作: 按 Enter 展开 nginx (PID 1234)
+  1234   ├─ [-] nginx            0      2.3%   45.2 MB
+  1235   │  └─     nginx         33     0.1%   12.1 MB
+
+[1 秒后自动刷新]
+
+界面状态: nginx 又折叠了！
+  1234   ├─ [+] nginx            0      2.3%   45.2 MB
+         ❌ 用户的展开操作丢失
+
+选中位置: 从 nginx 跳到了其他进程
+         ❌ 排序变化后索引指向不同进程
+```
+
+修复后:
+```
+用户操作: 按 Enter 展开 nginx (PID 1234)
+  1234   ├─ [-] nginx            0      2.3%   45.2 MB
+  1235   │  └─     nginx         33     0.1%   12.1 MB
+
+[1 秒后自动刷新]
+
+界面状态: nginx 保持展开！
+  1234   ├─ [-] nginx            0      2.5%   46.1 MB  ← CPU/内存更新
+  1235   │  └─     nginx         33     0.1%   12.3 MB  ← 数据刷新
+         ✅ 展开状态保持
+         ✅ 选中仍在 PID 1234
+         ✅ 只有数据更新，UI 状态不变
+```
+
+**技术细节**:
+
+1. **展开状态持久化**:
+   - 使用 `HashSet<u32>` 存储展开的 PIDs
+   - O(1) 查询性能
+   - 刷新前收集，刷新后恢复
+
+2. **选中进程定位**:
+   - 基于 PID 而非索引
+   - 列表视图: 在 `filtered_indices` 中查找
+   - 树视图: 在 `visible_tree_nodes` 中查找
+   - 保证刷新后定位到相同进程
+
+3. **首次展开策略**:
+   - `expanded_pids.is_empty()` 判断首次构建
+   - 首次: 自动展开根节点(良好的初始体验)
+   - 后续: 完全尊重用户选择(不干扰操作)
+
+**提交信息**:
+- **Commit**: f9bd81a
+- **Message**: "Fix tree view: preserve expansion state and selection across auto-refresh"
+- **测试**: ✅ 展开节点后持续刷新，状态保持不变
+
+**重要性评级**: ⭐⭐⭐⭐⭐
+- 修复前: 树视图几乎不可用
+- 修复后: 流畅的实时监控体验
+- 这是从"演示功能"到"生产可用"的质变
+
+**设计启示**:
+1. **状态管理**: 自动刷新的 UI 必须保存用户交互状态
+2. **PID vs Index**: 动态列表应该用唯一标识符跟踪选中项
+3. **首次体验 vs 后续操作**: 区分初始化和用户控制的状态
+4. **测试真实场景**: 1秒刷新的自动更新是必须测试的场景
+5. **用户反馈**: 用户的问题往往暴露最严重的 UX 缺陷
