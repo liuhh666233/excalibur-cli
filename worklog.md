@@ -447,3 +447,44 @@ History 模块直接激活并显示
        None => None,
    };
    ```
+
+---
+
+## [2026-01-02] 功能更新：Fish Shell 集成优化
+
+### 背景
+
+在实现了 CLI 参数支持后，需要更新 Fish shell 集成以充分利用新功能。
+
+### 修改内容
+
+**文件**: `excalibur/install/exh.fish`
+
+**修改前**:
+```fish
+set -l selected_cmd (command excalibur 2>/dev/null)
+```
+
+**修改后**:
+```fish
+set -l selected_cmd (command excalibur h 2>/dev/null)
+```
+
+### 原因
+
+1. **跳过主菜单**: 使用 `excalibur h` 直接进入 history 模块，避免显示主菜单
+2. **一致性**: `exh` (excalibur history) 函数名暗示应该直接进入 history 模块
+3. **用户体验**: 减少一次交互步骤，更快进入历史浏览界面
+
+### 效果
+
+- **命令行**: 用户执行 `exh` 或按 `Ctrl+R` 时，直接进入 history 模块
+- **行为**: 保持原有的 Fish 集成功能（exit code 0/10 处理）
+- **兼容性**: 不影响直接运行 `excalibur` 显示主菜单的功能
+
+### 测试
+
+用户可以通过以下方式测试：
+1. 在 Fish shell 中运行 `exh` 命令
+2. 或按 `Ctrl+R` 快捷键
+3. 确认直接进入 history 模块而非主菜单

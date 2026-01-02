@@ -3,8 +3,8 @@
 # Function name: exh (excalibur history)
 
 function exh --description "Interactive command history browser (Excalibur)"
-    # Directly call the excalibur binary
-    set -l selected_cmd (command excalibur 2>/dev/null)
+    # Directly call the excalibur binary with 'h' (history) subcommand
+    set -l selected_cmd (command excalibur h 2>/dev/null)
 
     # Get the exit status
     set -l status_code $status
