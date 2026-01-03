@@ -1,68 +1,138 @@
 mod collector;
+mod network;
+mod query;
 mod state;
+mod systemd;
 mod ui;
 
 use crate::modules::{Module, ModuleAction, ModuleId, ModuleMetadata};
 use color_eyre::Result;
-use collector::ProcessCollector;
+use query::QueryEngine;
 use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
 use state::{InputMode, ProcessTracerState};
-use std::time::Duration;
 
-/// Process Tracer module
+/// Process Tracer module (query-driven)
 #[derive(Debug)]
 pub struct ProcessTracerModule {
     state: ProcessTracerState,
-    collector: ProcessCollector,
+    query_engine: QueryEngine,
 }
 
 impl ProcessTracerModule {
     pub fn new() -> Self {
-        let mut module = Self {
+        Self {
             state: ProcessTracerState::new(),
-            collector: ProcessCollector::new(),
-        };
-
-        // Pre-load process data
-        if let Ok(processes) = module.collector.collect() {
-            module.state.update_processes(processes);
+            query_engine: QueryEngine::new(),
         }
-
-        module
     }
 
-    /// Force refresh process list
-    fn refresh_processes(&mut self) -> Result<()> {
-        let processes = self.collector.collect()?;
-        self.state.update_processes(processes);
-        self.state
-            .set_notification("Refreshed process list".to_string());
+    /// Execute the current query
+    fn execute_query(&mut self) -> Result<()> {
+        // Parse query input
+        let query = match self.state.parse_query() {
+            Ok(q) => q,
+            Err(e) => {
+                self.state
+                    .set_notification(format!("Invalid query: {}", e));
+                return Ok(());
+            }
+        };
+
+        // Execute query
+        match self.query_engine.execute(query) {
+            Ok(results) => {
+                if results.is_empty() {
+                    self.state.set_notification("No processes found".to_string());
+                } else {
+                    // Store results and switch to results mode
+                    self.state.query_results = results;
+                    self.state.selected_result = 0;
+                    self.state.scroll_offset = 0;
+                    self.state.input_mode = InputMode::ViewResults;
+
+                    // Add to history
+                    self.state.add_to_history(self.state.query_input.clone());
+
+                    self.state
+                        .set_notification(format!("Found {} result(s)", self.state.query_results.len()));
+                }
+            }
+            Err(e) => {
+                self.state.set_notification(format!("Query error: {}", e));
+            }
+        }
+
         Ok(())
     }
 
-    /// Handle key events in normal mode
-    fn handle_normal_mode(&mut self, key: KeyEvent) -> Result<ModuleAction> {
+    /// Handle key events in query mode
+    fn handle_query_mode(&mut self, key: KeyEvent) -> Result<ModuleAction> {
         use ratatui::crossterm::event::KeyCode;
 
         match key.code {
-            // Exit
-            KeyCode::Esc | KeyCode::Char('q') => Ok(ModuleAction::Exit),
+            // Execute query
+            KeyCode::Enter => {
+                self.execute_query()?;
+                Ok(ModuleAction::None)
+            }
 
-            // Navigation
+            // Input character
+            KeyCode::Char(c) => {
+                self.state.query_input.push(c);
+                Ok(ModuleAction::None)
+            }
+
+            // Backspace
+            KeyCode::Backspace => {
+                self.state.query_input.pop();
+                Ok(ModuleAction::None)
+            }
+
+            // History navigation
+            KeyCode::Up => {
+                self.state.history_up();
+                Ok(ModuleAction::None)
+            }
+            KeyCode::Down => {
+                self.state.history_down();
+                Ok(ModuleAction::None)
+            }
+
+            // Exit
+            KeyCode::Esc => Ok(ModuleAction::Exit),
+
+            _ => Ok(ModuleAction::None),
+        }
+    }
+
+    /// Handle key events in results mode
+    fn handle_results_mode(&mut self, key: KeyEvent) -> Result<ModuleAction> {
+        use ratatui::crossterm::event::KeyCode;
+
+        match key.code {
+            // Return to query mode
+            KeyCode::Esc => {
+                self.state.input_mode = InputMode::Query;
+                self.state.query_input.clear();
+                self.state.scroll_offset = 0;
+                Ok(ModuleAction::None)
+            }
+
+            // New query
+            KeyCode::Char('/') => {
+                self.state.input_mode = InputMode::Query;
+                self.state.query_input.clear();
+                self.state.scroll_offset = 0;
+                Ok(ModuleAction::None)
+            }
+
+            // Navigate results
             KeyCode::Up | KeyCode::Char('k') => {
                 self.state.select_previous();
                 Ok(ModuleAction::None)
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.state.select_next();
-                Ok(ModuleAction::None)
-            }
-            KeyCode::PageUp => {
-                self.state.page_up();
-                Ok(ModuleAction::None)
-            }
-            KeyCode::PageDown => {
-                self.state.page_down();
                 Ok(ModuleAction::None)
             }
             KeyCode::Home | KeyCode::Char('g') => {
@@ -74,73 +144,18 @@ impl ProcessTracerModule {
                 Ok(ModuleAction::None)
             }
 
-            // Sort
-            KeyCode::Char('s') => {
-                self.state.cycle_sort_mode();
+            // Scroll details panel
+            KeyCode::PageUp => {
+                self.state.page_up();
+                Ok(ModuleAction::None)
+            }
+            KeyCode::PageDown => {
+                self.state.page_down();
                 Ok(ModuleAction::None)
             }
 
-            // Toggle tree view
-            KeyCode::Char('t') => {
-                self.state.toggle_view_mode();
-                Ok(ModuleAction::None)
-            }
-
-            // Expand/collapse in tree view (Enter or Space)
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                self.state.toggle_tree_expansion();
-                Ok(ModuleAction::None)
-            }
-
-            // Refresh
-            KeyCode::Char('r') => {
-                self.refresh_processes()?;
-                Ok(ModuleAction::None)
-            }
-
-            // Enter search mode
-            KeyCode::Char('/') => {
-                self.state.input_mode = InputMode::Search;
-                self.state.search_query.clear();
-                Ok(ModuleAction::None)
-            }
-
-            _ => Ok(ModuleAction::None),
-        }
-    }
-
-    /// Handle key events in search mode
-    fn handle_search_mode(&mut self, key: KeyEvent) -> Result<ModuleAction> {
-        use ratatui::crossterm::event::KeyCode;
-
-        match key.code {
-            // Exit search mode and clear search
-            KeyCode::Esc => {
-                self.state.input_mode = InputMode::Normal;
-                self.state.search_query.clear();
-                self.state.apply_filters();
-                Ok(ModuleAction::None)
-            }
-
-            // Apply search
-            KeyCode::Enter => {
-                self.state.input_mode = InputMode::Normal;
-                Ok(ModuleAction::None)
-            }
-
-            // Input character
-            KeyCode::Char(c) => {
-                self.state.search_query.push(c);
-                self.state.apply_filters();
-                Ok(ModuleAction::None)
-            }
-
-            // Backspace
-            KeyCode::Backspace => {
-                self.state.search_query.pop();
-                self.state.apply_filters();
-                Ok(ModuleAction::None)
-            }
+            // Quit (also exits)
+            KeyCode::Char('q') => Ok(ModuleAction::Exit),
 
             _ => Ok(ModuleAction::None),
         }
@@ -152,43 +167,33 @@ impl Module for ProcessTracerModule {
         ModuleMetadata {
             id: ModuleId::ProcessTracer,
             name: "Process Tracer".to_string(),
-            description: "Inspect running processes and their supervisors".to_string(),
+            description: "Query and analyze running processes - Why is this running?".to_string(),
             shortcut: Some('p'),
         }
     }
 
     fn init(&mut self) -> Result<()> {
-        // Reset UI state
-        self.state.selected_index = 0;
-        self.state.search_query.clear();
-        self.state.input_mode = InputMode::Normal;
+        // Reset to query mode on entry
+        self.state.input_mode = InputMode::Query;
+        self.state.query_input.clear();
+        self.state.query_results.clear();
+        self.state.selected_result = 0;
+        self.state.scroll_offset = 0;
         self.state.notification = None;
-
-        // Refresh process list
-        self.refresh_processes()?;
 
         Ok(())
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<ModuleAction> {
         match self.state.input_mode {
-            InputMode::Normal => self.handle_normal_mode(key_event),
-            InputMode::Search => self.handle_search_mode(key_event),
+            InputMode::Query => self.handle_query_mode(key_event),
+            InputMode::ViewResults => self.handle_results_mode(key_event),
         }
     }
 
     fn update(&mut self) -> Result<()> {
-        // Clear expired notifications
+        // Only clear expired notifications (no auto-refresh)
         self.state.clear_expired_notifications();
-
-        // Auto-refresh every 1 second
-        if self.state.last_update.elapsed() >= Duration::from_secs(1) {
-            if let Ok(processes) = self.collector.collect() {
-                self.state.update_processes(processes);
-                self.state.last_update = std::time::Instant::now();
-            }
-        }
-
         Ok(())
     }
 
@@ -197,10 +202,10 @@ impl Module for ProcessTracerModule {
     }
 
     fn cleanup(&mut self) -> Result<()> {
-        // Reset UI state (keep data in memory for fast re-entry)
-        self.state.selected_index = 0;
-        self.state.search_query.clear();
-        self.state.input_mode = InputMode::Normal;
+        // Clear state on module exit
+        self.state.input_mode = InputMode::Query;
+        self.state.query_input.clear();
+        self.state.query_results.clear();
         self.state.notification = None;
 
         Ok(())

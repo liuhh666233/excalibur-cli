@@ -1,38 +1,20 @@
 use super::collector::Supervisor;
-use super::state::{InputMode, ProcessTracerState, ProcessTreeNode, ViewMode};
+use super::network::{ConnectionState, Protocol};
+use super::state::{InputMode, ProcessTracerState};
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Paragraph, Row, StatefulWidget, Table, Widget},
+    widgets::{Block, BorderType, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget},
 };
 
 /// Render the process tracer UI
 pub fn render(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    // Split screen into sections
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Length(3),  // Search bar
-            Constraint::Min(10),    // Process table
-            Constraint::Length(7),  // Details panel
-            Constraint::Length(3),  // Status bar
-        ])
-        .split(area);
-
-    render_header(state, chunks[0], buf);
-    render_search_bar(state, chunks[1], buf);
-
-    // Render process list or tree based on view mode
-    match state.view_mode {
-        ViewMode::List => render_process_table(state, chunks[2], buf),
-        ViewMode::Tree => render_process_tree(state, chunks[2], buf),
+    match state.input_mode {
+        InputMode::Query => render_query_mode(state, area, buf),
+        InputMode::ViewResults => render_results_mode(state, area, buf),
     }
-
-    render_details_panel(state, chunks[3], buf);
-    render_status_bar(state, chunks[4], buf);
 
     // Render notification if present
     if let Some((ref msg, _)) = state.notification {
@@ -40,60 +22,159 @@ pub fn render(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
     }
 }
 
-/// Render header with title and process count
-fn render_header(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    let (filtered_count, total_count) = state.get_counts();
-    let count_text = if filtered_count == total_count {
-        format!("{} processes", total_count)
-    } else {
-        format!("{}/{} processes", filtered_count, total_count)
-    };
+/// Render query mode (input + help)
+fn render_query_mode(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Length(5),  // Input box (larger)
+            Constraint::Min(8),     // Help text
+            Constraint::Length(3),  // Status bar
+        ])
+        .split(area);
 
-    let title = format!(" Process Tracer │ {} ", count_text);
+    // Header
+    let header = Block::bordered()
+        .title(" Process Tracer - Why Is This Running? ")
+        .title_alignment(Alignment::Center)
+        .border_type(BorderType::Rounded)
+        .style(Style::default().fg(Color::Cyan));
+    header.render(chunks[0], buf);
 
+    // Input box
+    let input_text = format!(" {}", state.query_input);
+    let input = Paragraph::new(input_text)
+        .block(
+            Block::bordered()
+                .title(" Enter Query ")
+                .border_type(BorderType::Rounded)
+                .style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+        )
+        .style(Style::default().fg(Color::White));
+    input.render(chunks[1], buf);
+
+    // Render cursor
+    let cursor_x = chunks[1].x + 1 + state.query_input.len() as u16 + 1;
+    let cursor_y = chunks[1].y + 1;
+    if cursor_x < chunks[1].x + chunks[1].width - 1 {
+        if let Some(cell) = buf.cell_mut((cursor_x, cursor_y)) {
+            cell.set_char('█');
+            cell.set_fg(Color::Yellow);
+        }
+    }
+
+    // Help text
+    let help_lines = vec![
+        Line::from(vec![
+            Span::styled("Query by:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  • ", Style::default().fg(Color::Green)),
+            Span::styled("Process name: ", Style::default().fg(Color::Yellow)),
+            Span::raw("nginx"),
+        ]),
+        Line::from(vec![
+            Span::styled("  • ", Style::default().fg(Color::Green)),
+            Span::styled("PID: ", Style::default().fg(Color::Yellow)),
+            Span::raw("12345"),
+        ]),
+        Line::from(vec![
+            Span::styled("  • ", Style::default().fg(Color::Green)),
+            Span::styled("Port: ", Style::default().fg(Color::Yellow)),
+            Span::raw(":8080"),
+            Span::styled(" (may need root)", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Note: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Port queries for root processes require sudo", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("History: ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{} queries", state.query_history.len())),
+        ]),
+    ];
+
+    let help = Paragraph::new(help_lines)
+        .block(
+            Block::bordered()
+                .title(" Help ")
+                .border_type(BorderType::Rounded)
+                .style(Style::default().fg(Color::DarkGray)),
+        );
+    help.render(chunks[2], buf);
+
+    // Status bar
+    let status_text = "[Enter] Search  [↑/↓] History  [Esc] Exit";
+    let status = Paragraph::new(status_text)
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .style(Style::default().fg(Color::DarkGray)),
+        )
+        .centered()
+        .style(Style::default().fg(Color::Gray));
+    status.render(chunks[3], buf);
+}
+
+/// Render results mode (results list + details)
+fn render_results_mode(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Length(10), // Results list
+            Constraint::Min(15),    // Details panel (scrollable)
+            Constraint::Length(3),  // Status bar
+        ])
+        .split(area);
+
+    // Header
+    let result_count = state.query_results.len();
+    let title = format!(
+        " Results: {} match{} ",
+        result_count,
+        if result_count == 1 { "" } else { "es" }
+    );
     let header = Block::bordered()
         .title(title)
         .title_alignment(Alignment::Center)
         .border_type(BorderType::Rounded)
         .style(Style::default().fg(Color::Cyan));
+    header.render(chunks[0], buf);
 
-    header.render(area, buf);
-}
+    // Results list
+    render_results_list(state, chunks[1], buf);
 
-/// Render search bar
-fn render_search_bar(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    let (text, style) = match state.input_mode {
-        InputMode::Search => (
-            format!(" Search: {}█", state.search_query),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        InputMode::Normal => (
-            " Press / to search".to_string(),
-            Style::default().fg(Color::DarkGray),
-        ),
-    };
+    // Details panel
+    render_detailed_analysis(state, chunks[2], buf);
 
-    let search = Paragraph::new(text)
+    // Status bar
+    let status_text = "[j/k] Navigate  [PageUp/Down] Scroll  [/] New Query  [Esc] Back";
+    let status = Paragraph::new(status_text)
         .block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
-                .style(style),
+                .style(Style::default().fg(Color::DarkGray)),
         )
-        .style(style);
-
-    search.render(area, buf);
+        .centered()
+        .style(Style::default().fg(Color::Gray));
+    status.render(chunks[3], buf);
 }
 
-/// Render process table
-fn render_process_table(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    if state.filtered_indices.is_empty() {
-        // Show "no processes" message
+/// Render results list
+fn render_results_list(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
+    if state.query_results.is_empty() {
         let msg = Paragraph::new("No processes found")
             .block(
                 Block::bordered()
-                    .title(" Processes ")
+                    .title(" Results ")
                     .border_type(BorderType::Rounded),
             )
             .centered()
@@ -102,175 +183,337 @@ fn render_process_table(state: &ProcessTracerState, area: Rect, buf: &mut Buffer
         return;
     }
 
-    // Create table rows
-    let rows: Vec<Row> = state
-        .filtered_indices
+    let items: Vec<ListItem> = state
+        .query_results
         .iter()
-        .map(|&idx| {
-            let proc = &state.processes[idx];
+        .enumerate()
+        .map(|(idx, result)| {
+            let proc = &result.process;
+            let supervisor_str = match &proc.supervisor {
+                Supervisor::Systemd { unit } => format!("systemd: {}", unit),
+                Supervisor::Docker { container_id } => format!("docker: {}", container_id),
+                Supervisor::Shell => "shell".to_string(),
+                Supervisor::Unknown => "unknown".to_string(),
+            };
 
-            // Format warnings
-            let warning_symbols: Vec<&str> = proc.warnings.iter()
-                .map(|w| w.symbol())
-                .collect();
-            let warnings_str = warning_symbols.join(" ");
+            let is_selected = idx == state.selected_result;
+            let symbol = if is_selected { "▶ " } else { "  " };
 
-            Row::new(vec![
-                proc.pid.to_string(),
-                proc.name.clone(),
-                proc.user.clone(),
-                format!("{:.1}%", proc.cpu_percent),
-                proc.memory_str(),
-                warnings_str,
-            ])
+            let line = Line::from(vec![
+                Span::raw(symbol),
+                Span::styled(
+                    &proc.name,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(if is_selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::raw(format!(" (PID {}) - ", proc.pid)),
+                Span::styled(supervisor_str, Style::default().fg(Color::Cyan)),
+            ]);
+
+            ListItem::new(line).style(if is_selected {
+                Style::default().bg(Color::DarkGray)
+            } else {
+                Style::default()
+            })
         })
         .collect();
 
-    // Create table
-    let header = Row::new(vec!["PID", "Name", "User", "CPU%", "Memory", "Warnings"])
-        .style(
+    let list = List::new(items).block(
+        Block::bordered()
+            .title(" Results ")
+            .border_type(BorderType::Rounded),
+    );
+
+    Widget::render(list, area, buf);
+}
+
+/// Render detailed analysis panel
+fn render_detailed_analysis(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
+    let result = match state.get_selected_result() {
+        Some(r) => r,
+        None => {
+            let msg = Paragraph::new("No result selected")
+                .block(
+                    Block::bordered()
+                        .title(" Details ")
+                        .border_type(BorderType::Rounded),
+                )
+                .centered()
+                .style(Style::default().fg(Color::DarkGray));
+            msg.render(area, buf);
+            return;
+        }
+    };
+
+    let mut lines = Vec::new();
+
+    // === PROCESS ===
+    lines.push(Line::from(vec![Span::styled(
+        "=== PROCESS ===",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(vec![
+        Span::styled("Name:    ", Style::default().fg(Color::Cyan)),
+        Span::raw(&result.process.name),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("PID:     ", Style::default().fg(Color::Cyan)),
+        Span::raw(result.process.pid.to_string()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("User:    ", Style::default().fg(Color::Cyan)),
+        Span::raw(&result.process.user),
+    ]));
+
+    let cmdline = if result.process.cmdline.is_empty() {
+        format!("[{}]", result.process.name)
+    } else {
+        result.process.cmdline.join(" ")
+    };
+    lines.push(Line::from(vec![
+        Span::styled("Command: ", Style::default().fg(Color::Cyan)),
+        Span::raw(&cmdline),
+    ]));
+
+    if let Some(ref cwd) = result.working_directory {
+        lines.push(Line::from(vec![
+            Span::styled("CWD:     ", Style::default().fg(Color::Cyan)),
+            Span::raw(cwd),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("Uptime:  ", Style::default().fg(Color::Cyan)),
+        Span::raw(result.process.uptime_str()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Memory:  ", Style::default().fg(Color::Cyan)),
+        Span::raw(result.process.memory_str()),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // === ANCESTOR CHAIN ===
+    if !result.ancestor_chain.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            "=== ANCESTOR CHAIN ===",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
-        )
-        .bottom_margin(1);
+        )]));
+        lines.push(Line::from(""));
 
-    let sort_indicator = format!(" Processes (Sort: {}) ", state.sort_mode.as_str());
+        for (idx, ancestor) in result.ancestor_chain.iter().enumerate() {
+            let supervisor_str = match &ancestor.supervisor {
+                Supervisor::Systemd { unit } => format!(" (Systemd: {})", unit),
+                Supervisor::Docker { container_id } => format!(" (Docker: {})", container_id),
+                Supervisor::Shell => " (Shell)".to_string(),
+                Supervisor::Unknown => "".to_string(),
+            };
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(8),
-            Constraint::Min(15),
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Length(12),
-            Constraint::Min(10),
-        ],
-    )
-    .header(header)
-    .block(
-        Block::bordered()
-            .title(sort_indicator)
-            .border_type(BorderType::Rounded),
-    )
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ");
+            let prefix = if idx == 0 {
+                "".to_string()
+            } else {
+                format!("{}", "  ".repeat(idx - 1) + "└─ ")
+            };
 
-    // Render with state
-    let mut table_state = state.table_state.clone();
-    StatefulWidget::render(table, area, buf, &mut table_state);
-}
-
-/// Render details panel for selected process
-fn render_details_panel(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    if let Some(proc) = state.get_selected_process_tree() {
-        let cmdline = if proc.cmdline.is_empty() {
-            format!("[{}]", proc.name)
-        } else {
-            proc.cmdline.join(" ")
-        };
-
-        // Truncate if too long
-        let cmdline_display = if cmdline.len() > 100 {
-            format!("{}...", &cmdline[..97])
-        } else {
-            cmdline
-        };
-
-        let supervisor_str = match &proc.supervisor {
-            Supervisor::Systemd { unit } => format!("systemd ({})", unit),
-            Supervisor::Docker { container_id } => format!("docker ({})", container_id),
-            Supervisor::Shell => "shell".to_string(),
-            Supervisor::Unknown => "unknown".to_string(),
-        };
-
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("Command: ", Style::default().fg(Color::Cyan)),
-                Span::raw(&cmdline_display),
-            ]),
-            Line::from(vec![
-                Span::styled("Parent:  ", Style::default().fg(Color::Cyan)),
-                Span::raw(format!("PID {}", proc.ppid)),
-            ]),
-            Line::from(vec![
-                Span::styled("User:    ", Style::default().fg(Color::Cyan)),
-                Span::raw(&proc.user),
-            ]),
-            Line::from(vec![
-                Span::styled("Uptime:  ", Style::default().fg(Color::Cyan)),
-                Span::raw(proc.uptime_str()),
-            ]),
-            Line::from(vec![
-                Span::styled("Supervisor: ", Style::default().fg(Color::Cyan)),
-                Span::raw(supervisor_str),
-            ]),
-        ];
-
-        // Add warnings if any
-        if !proc.warnings.is_empty() {
             lines.push(Line::from(vec![
-                Span::styled("Warnings: ", Style::default().fg(Color::Red)),
+                Span::raw(prefix),
+                Span::styled(format!("PID {}", ancestor.pid), Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(&ancestor.name, Style::default().fg(Color::Yellow)),
+                Span::styled(supervisor_str, Style::default().fg(Color::Cyan)),
             ]));
-
-            for warning in &proc.warnings {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        warning.symbol(),
-                        Style::default().fg(warning.color()),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(
-                        warning.description(),
-                        Style::default().fg(Color::Gray),
-                    ),
-                ]));
-            }
         }
 
-        let details = Paragraph::new(lines).block(
-            Block::bordered()
-                .title(format!(" Details - {} (PID {}) ", proc.name, proc.pid))
-                .border_type(BorderType::Rounded),
-        );
-
-        details.render(area, buf);
-    } else {
-        let msg = Paragraph::new("No process selected")
-            .block(
-                Block::bordered()
-                    .title(" Details ")
-                    .border_type(BorderType::Rounded),
-            )
-            .centered()
-            .style(Style::default().fg(Color::DarkGray));
-        msg.render(area, buf);
+        lines.push(Line::from(""));
     }
-}
 
-/// Render status bar with keybindings
-fn render_status_bar(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    let help_text = match state.view_mode {
-        ViewMode::List => "[j/k] Navigate  [s] Sort  [t] Tree  [r] Refresh  [/] Search  [Esc/q] Exit",
-        ViewMode::Tree => "[j/k] Navigate  [Enter/Space] Expand  [t] List  [r] Refresh  [/] Search  [Esc/q] Exit",
-    };
+    // === NETWORK ===
+    if !result.network_bindings.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            "=== NETWORK ===",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(""));
 
-    let status = Paragraph::new(help_text)
-        .block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .style(Style::default().fg(Color::DarkGray)),
-        )
-        .centered()
-        .style(Style::default().fg(Color::Gray));
+        for binding in &result.network_bindings {
+            let protocol_str = match binding.protocol {
+                Protocol::Tcp => "TCP",
+                Protocol::Udp => "UDP",
+            };
 
-    status.render(area, buf);
+            let state_str = match binding.state {
+                ConnectionState::Listen => "[LISTEN]",
+                ConnectionState::Established => "[ESTABLISHED]",
+                ConnectionState::TimeWait => "[TIME_WAIT]",
+                ConnectionState::CloseWait => "[CLOSE_WAIT]",
+                ConnectionState::Unknown => "[UNKNOWN]",
+            };
+
+            let is_public = binding.local_addr.to_string() == "0.0.0.0"
+                || binding.local_addr.to_string() == "::";
+
+            let warning = if is_public && binding.state == ConnectionState::Listen {
+                Span::styled(" ⚠ PUBLIC", Style::default().fg(Color::Red))
+            } else {
+                Span::raw("")
+            };
+
+            let remote_str = if let Some(ref remote_addr) = binding.remote_addr {
+                if let Some(remote_port) = binding.remote_port {
+                    format!(" → {}:{}", remote_addr, remote_port)
+                } else {
+                    format!(" → {}", remote_addr)
+                }
+            } else {
+                String::new()
+            };
+
+            lines.push(Line::from(vec![
+                Span::raw(format!(
+                    "{} {}:{} {}",
+                    protocol_str, binding.local_addr, binding.local_port, state_str
+                )),
+                Span::raw(remote_str),
+                warning,
+            ]));
+        }
+
+        lines.push(Line::from(""));
+    }
+
+    // === SYSTEMD ===
+    if let Some(ref systemd) = result.systemd_metadata {
+        lines.push(Line::from(vec![Span::styled(
+            "=== SYSTEMD ===",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(vec![
+            Span::styled("Unit:        ", Style::default().fg(Color::Cyan)),
+            Span::raw(&systemd.unit_name),
+        ]));
+
+        if let Some(ref desc) = systemd.description {
+            lines.push(Line::from(vec![
+                Span::styled("Description: ", Style::default().fg(Color::Cyan)),
+                Span::raw(desc),
+            ]));
+        }
+
+        lines.push(Line::from(vec![
+            Span::styled("State:       ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!(
+                "{}/{}",
+                systemd.active_state, systemd.sub_state
+            )),
+        ]));
+
+        if let Some(ref restart) = systemd.restart_policy {
+            lines.push(Line::from(vec![
+                Span::styled("Restart:     ", Style::default().fg(Color::Cyan)),
+                Span::raw(restart),
+            ]));
+        }
+
+        if let Some(ref exec_start) = systemd.exec_start {
+            lines.push(Line::from(vec![
+                Span::styled("ExecStart:   ", Style::default().fg(Color::Cyan)),
+                Span::raw(exec_start),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+    }
+
+    // === ENVIRONMENT ===
+    if !result.environment.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            "=== ENVIRONMENT ===",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(""));
+
+        let mut env_vars: Vec<_> = result.environment.iter().collect();
+        env_vars.sort_by_key(|(k, _)| *k);
+
+        for (key, value) in env_vars {
+            lines.push(Line::from(vec![
+                Span::styled(key, Style::default().fg(Color::Green)),
+                Span::raw("="),
+                Span::raw(value),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+    }
+
+    // === WARNINGS ===
+    if !result.process.warnings.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            "=== WARNINGS ===",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(""));
+
+        for warning in &result.process.warnings {
+            lines.push(Line::from(vec![
+                Span::styled(warning.symbol(), Style::default().fg(warning.color())),
+                Span::raw(" "),
+                Span::styled(warning.description(), Style::default().fg(Color::Gray)),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+    }
+
+    // Apply scroll offset
+    let total_lines = lines.len(); // Save before consuming
+    let visible_lines: Vec<Line> = lines
+        .into_iter()
+        .skip(state.scroll_offset as usize)
+        .collect();
+
+    let details = Paragraph::new(visible_lines).block(
+        Block::bordered()
+            .title(format!(" Details - {} (PID {}) ", result.process.name, result.process.pid))
+            .border_type(BorderType::Rounded),
+    );
+
+    details.render(area, buf);
+
+    // Render scrollbar if needed
+    let visible_height = area.height.saturating_sub(2) as usize;
+    if total_lines > visible_height {
+        let mut scrollbar_state = ScrollbarState::default()
+            .content_length(total_lines)
+            .position(state.scroll_offset as usize);
+
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+
+        StatefulWidget::render(scrollbar, area, buf, &mut scrollbar_state);
+    }
 }
 
 /// Render notification popup
@@ -308,132 +551,4 @@ fn render_notification(message: &str, area: Rect, buf: &mut Buffer) {
         .style(Style::default().fg(Color::Green).bg(Color::Black));
 
     notification.render(notification_area, buf);
-}
-
-/// Render process tree view
-fn render_process_tree(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
-    if state.visible_tree_nodes.is_empty() {
-        let msg = Paragraph::new("No processes found")
-            .block(
-                Block::bordered()
-                    .title(" Process Tree ")
-                    .border_type(BorderType::Rounded),
-            )
-            .centered()
-            .style(Style::default().fg(Color::DarkGray));
-        msg.render(area, buf);
-        return;
-    }
-
-    // Create tree rows
-    let rows: Vec<Row> = state
-        .visible_tree_nodes
-        .iter()
-        .map(|&pid| {
-            let node = state.tree_nodes.get(&pid).unwrap();
-            let proc = &state.processes[node.process_idx];
-
-            // Build tree prefix (├─, └─, etc.)
-            let tree_prefix = build_tree_prefix(state, pid, node);
-
-            // Expansion indicator
-            let expansion_indicator = if !node.children.is_empty() {
-                if node.is_expanded {
-                    "[-] "
-                } else {
-                    "[+] "
-                }
-            } else {
-                "    "
-            };
-
-            // Combine prefix with process name
-            let name_with_tree = format!("{}{}{}", tree_prefix, expansion_indicator, proc.name);
-
-            // Format warnings
-            let warning_symbols: Vec<&str> = proc.warnings.iter().map(|w| w.symbol()).collect();
-            let warnings_str = warning_symbols.join(" ");
-
-            Row::new(vec![
-                proc.pid.to_string(),
-                name_with_tree,
-                proc.user.clone(),
-                format!("{:.1}%", proc.cpu_percent),
-                proc.memory_str(),
-                warnings_str,
-            ])
-        })
-        .collect();
-
-    // Create table
-    let header = Row::new(vec!["PID", "Name", "User", "CPU%", "Memory", "Warnings"])
-        .style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .bottom_margin(1);
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(8),
-            Constraint::Min(25),
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Length(12),
-            Constraint::Min(10),
-        ],
-    )
-    .header(header)
-    .block(
-        Block::bordered()
-            .title(" Process Tree ")
-            .border_type(BorderType::Rounded),
-    )
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("▶ ");
-
-    let mut table_state = state.table_state.clone();
-    StatefulWidget::render(table, area, buf, &mut table_state);
-}
-
-/// Build tree prefix with box-drawing characters
-fn build_tree_prefix(state: &ProcessTracerState, pid: u32, node: &ProcessTreeNode) -> String {
-    let mut prefix = String::new();
-
-    // Add indentation based on depth
-    for _ in 0..node.depth {
-        prefix.push_str("  ");
-    }
-
-    // Add tree connector if not root
-    if node.depth > 0 {
-        let is_last_child = is_last_sibling(state, pid);
-
-        if is_last_child {
-            prefix.push_str("└─ ");
-        } else {
-            prefix.push_str("├─ ");
-        }
-    }
-
-    prefix
-}
-
-/// Check if process is the last sibling
-fn is_last_sibling(state: &ProcessTracerState, pid: u32) -> bool {
-    // Find parent
-    if let Some(proc) = state.processes.iter().find(|p| p.pid == pid) {
-        if let Some(parent_node) = state.tree_nodes.get(&proc.ppid) {
-            if let Some(last_child) = parent_node.children.last() {
-                return *last_child == pid;
-            }
-        }
-    }
-    false
 }

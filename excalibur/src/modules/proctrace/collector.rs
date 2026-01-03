@@ -19,6 +19,7 @@ pub enum ProcessWarning {
     HighCpu { percent: f32 },
     HighMemory { gb: f64 },
     LongUptime { days: u64 },
+    PublicBinding { port: u16, protocol: String },
 }
 
 impl ProcessWarning {
@@ -29,6 +30,7 @@ impl ProcessWarning {
             ProcessWarning::HighCpu { .. } => "⚠ HIGH_CPU",
             ProcessWarning::HighMemory { .. } => "⚠ HIGH_MEM",
             ProcessWarning::LongUptime { .. } => "⚠ LONG_UPTIME",
+            ProcessWarning::PublicBinding { .. } => "⚠ PUBLIC",
         }
     }
 
@@ -39,6 +41,9 @@ impl ProcessWarning {
             ProcessWarning::HighCpu { percent } => format!("High CPU usage: {:.1}%", percent),
             ProcessWarning::HighMemory { gb } => format!("High memory usage: {:.1} GB", gb),
             ProcessWarning::LongUptime { days } => format!("Long uptime: {} days", days),
+            ProcessWarning::PublicBinding { port, protocol } => {
+                format!("Public binding: {}:{}", protocol, port)
+            }
         }
     }
 
@@ -50,6 +55,7 @@ impl ProcessWarning {
             ProcessWarning::HighCpu { .. } => Color::Yellow,
             ProcessWarning::HighMemory { .. } => Color::Yellow,
             ProcessWarning::LongUptime { .. } => Color::Cyan,
+            ProcessWarning::PublicBinding { .. } => Color::Red,
         }
     }
 }
@@ -246,7 +252,7 @@ impl ProcessCollector {
 }
 
 /// Detect supervisor for a process
-fn detect_supervisor(pid: u32) -> Supervisor {
+pub fn detect_supervisor(pid: u32) -> Supervisor {
     // Read cgroup file
     if let Ok(cgroup_content) = std::fs::read_to_string(format!("/proc/{}/cgroup", pid)) {
         // Check for systemd unit
@@ -335,4 +341,89 @@ fn detect_warnings(info: &ProcessInfo) -> Vec<ProcessWarning> {
     }
 
     warnings
+}
+
+/// Read single process by PID (for query mode)
+pub fn read_process(pid: u32) -> Result<ProcessInfo> {
+    let process = Process::new(pid as i32)?;
+    let stat = process.stat()?;
+    let status = process.status().ok();
+
+    // Get process name
+    let name = stat.comm.clone();
+
+    // Get parent PID
+    let ppid = stat.ppid as u32;
+
+    // Get command line
+    let cmdline = process
+        .cmdline()
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<Vec<String>>();
+
+    // Get user (UID)
+    let user = if let Some(ref s) = status {
+        s.ruid.to_string()
+    } else {
+        "?".to_string()
+    };
+
+    // Get memory (RSS in pages, convert to bytes)
+    let page_size = procfs::page_size();
+    let memory_rss = stat.rss * page_size;
+
+    // Get start time
+    let boot_time = procfs::boot_time_secs().unwrap_or(0);
+    let ticks_per_second = procfs::ticks_per_second();
+    let start_time = boot_time + (stat.starttime / ticks_per_second);
+
+    // Detect supervisor
+    let supervisor = detect_supervisor(pid);
+
+    // No CPU calculation for single-process reads
+    let cpu_percent = 0.0;
+
+    // Create process info
+    let mut info = ProcessInfo {
+        pid,
+        ppid,
+        name,
+        cmdline,
+        user,
+        cpu_percent,
+        memory_rss,
+        start_time,
+        supervisor,
+        warnings: Vec::new(),
+    };
+
+    // Detect warnings
+    info.warnings = detect_warnings(&info);
+
+    Ok(info)
+}
+
+/// Read working directory from /proc/[pid]/cwd
+pub fn read_working_directory(pid: u32) -> Result<String> {
+    let cwd_path = format!("/proc/{}/cwd", pid);
+    let cwd = std::fs::read_link(&cwd_path)?;
+    Ok(cwd.display().to_string())
+}
+
+/// Read environment variables from /proc/[pid]/environ
+pub fn read_environment(pid: u32) -> Result<HashMap<String, String>> {
+    let environ_path = format!("/proc/{}/environ", pid);
+    let content = std::fs::read_to_string(&environ_path)?;
+
+    let mut env_map = HashMap::new();
+    for entry in content.split('\0') {
+        if !entry.is_empty() {
+            if let Some((key, value)) = entry.split_once('=') {
+                env_map.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+
+    Ok(env_map)
 }

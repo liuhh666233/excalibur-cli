@@ -1,291 +1,152 @@
-use super::collector::ProcessInfo;
-use ratatui::widgets::TableState;
-use std::collections::{HashMap, HashSet};
+use super::query::{QueryResult, QueryType};
+use color_eyre::Result;
 use std::time::Instant;
 
 /// Input mode for the process tracer
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
-    Normal,
-    Search,
+    Query,         // Entering query
+    ViewResults,   // Browsing results
 }
 
-/// Sort mode for process list
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SortMode {
-    Cpu,
-    Memory,
-    Pid,
-    Name,
-}
-
-impl SortMode {
-    /// Get the next sort mode in cycle
-    pub fn next(&self) -> Self {
-        match self {
-            SortMode::Cpu => SortMode::Memory,
-            SortMode::Memory => SortMode::Pid,
-            SortMode::Pid => SortMode::Name,
-            SortMode::Name => SortMode::Cpu,
-        }
-    }
-
-    /// Get display name
-    pub fn as_str(&self) -> &str {
-        match self {
-            SortMode::Cpu => "CPU",
-            SortMode::Memory => "Memory",
-            SortMode::Pid => "PID",
-            SortMode::Name => "Name",
-        }
-    }
-}
-
-/// View mode for process display
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ViewMode {
-    List,  // Flat list view
-    Tree,  // Hierarchical tree view
-}
-
-/// Process tree node
-#[derive(Debug, Clone)]
-pub struct ProcessTreeNode {
-    pub process_idx: usize,    // Index into processes Vec
-    pub children: Vec<u32>,    // PIDs of child processes
-    pub is_expanded: bool,     // Expansion state
-    pub depth: usize,          // Tree depth for indentation
-}
-
-/// State for the process tracer module
+/// State for the process tracer module (query-driven)
 #[derive(Debug)]
 pub struct ProcessTracerState {
-    /// All processes
-    pub processes: Vec<ProcessInfo>,
-
-    /// Indices of processes after filtering
-    pub filtered_indices: Vec<usize>,
-
-    /// Currently selected index in filtered list
-    pub selected_index: usize,
-
-    /// Ratatui table state
-    pub table_state: TableState,
-
-    /// Search query string
-    pub search_query: String,
-
     /// Current input mode
     pub input_mode: InputMode,
 
-    /// Current sort mode
-    pub sort_mode: SortMode,
+    /// Query input buffer
+    pub query_input: String,
 
-    /// Last update timestamp
-    pub last_update: Instant,
+    /// Query results
+    pub query_results: Vec<QueryResult>,
+
+    /// Selected result index
+    pub selected_result: usize,
+
+    /// Scroll offset for details panel
+    pub scroll_offset: u16,
 
     /// Notification message with timestamp
     pub notification: Option<(String, Instant)>,
 
-    /// Current view mode
-    pub view_mode: ViewMode,
+    /// Query history (for up/down arrow navigation)
+    pub query_history: Vec<String>,
 
-    /// Process tree (PID -> TreeNode)
-    pub tree_nodes: HashMap<u32, ProcessTreeNode>,
-
-    /// Tree root PIDs (processes with no parent or parent not in list)
-    pub tree_roots: Vec<u32>,
-
-    /// Flattened visible tree nodes (for navigation)
-    pub visible_tree_nodes: Vec<u32>,
+    /// Current position in history
+    pub history_index: usize,
 }
 
 impl ProcessTracerState {
     pub fn new() -> Self {
-        let mut state = Self {
-            processes: Vec::new(),
-            filtered_indices: Vec::new(),
-            selected_index: 0,
-            table_state: TableState::default(),
-            search_query: String::new(),
-            input_mode: InputMode::Normal,
-            sort_mode: SortMode::Cpu,
-            last_update: Instant::now(),
+        Self {
+            input_mode: InputMode::Query,
+            query_input: String::new(),
+            query_results: Vec::new(),
+            selected_result: 0,
+            scroll_offset: 0,
             notification: None,
-            view_mode: ViewMode::List,
-            tree_nodes: HashMap::new(),
-            tree_roots: Vec::new(),
-            visible_tree_nodes: Vec::new(),
-        };
-
-        state.table_state.select(Some(0));
-        state
+            query_history: Vec::new(),
+            history_index: 0,
+        }
     }
 
-    /// Update process list
-    pub fn update_processes(&mut self, processes: Vec<ProcessInfo>) {
-        // Save currently selected PID to restore after refresh
-        let selected_pid = if self.view_mode == ViewMode::Tree {
-            self.visible_tree_nodes.get(self.selected_index).copied()
-        } else {
-            self.filtered_indices
-                .get(self.selected_index)
-                .and_then(|&idx| self.processes.get(idx))
-                .map(|proc| proc.pid)
-        };
+    /// Parse query input into QueryType
+    pub fn parse_query(&self) -> Result<QueryType> {
+        let input = self.query_input.trim();
 
-        self.processes = processes;
-        self.apply_filters();
-        self.apply_sort();
-
-        // Rebuild tree if in tree view
-        if self.view_mode == ViewMode::Tree {
-            self.build_tree();
+        // Try to parse as PID (pure number)
+        if let Ok(pid) = input.parse::<u32>() {
+            return Ok(QueryType::ByPid(pid));
         }
 
-        // Restore selection to same PID if it still exists
-        if let Some(pid) = selected_pid {
-            if self.view_mode == ViewMode::Tree {
-                // Find PID in visible tree nodes
-                if let Some(new_index) = self.visible_tree_nodes.iter().position(|&p| p == pid) {
-                    self.selected_index = new_index;
-                    self.table_state.select(Some(new_index));
-                    return;
-                }
-            } else {
-                // Find PID in filtered list
-                for (i, &idx) in self.filtered_indices.iter().enumerate() {
-                    if self.processes.get(idx).map(|p| p.pid) == Some(pid) {
-                        self.selected_index = i;
-                        self.table_state.select(Some(i));
-                        return;
-                    }
-                }
+        // Try to parse as port (":8080" format)
+        if let Some(port_str) = input.strip_prefix(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                return Ok(QueryType::ByPort(port));
             }
         }
 
-        // Keep selection valid (fallback if PID not found)
-        if self.selected_index >= self.filtered_indices.len() && !self.filtered_indices.is_empty()
-        {
-            self.selected_index = self.filtered_indices.len() - 1;
-            self.table_state.select(Some(self.selected_index));
+        // Default: treat as process name
+        Ok(QueryType::ByName(input.to_string()))
+    }
+
+    /// Add query to history
+    pub fn add_to_history(&mut self, query: String) {
+        if !query.is_empty() && self.query_history.last() != Some(&query) {
+            self.query_history.push(query);
+            self.history_index = self.query_history.len();
         }
     }
 
-    /// Apply search filter
-    pub fn apply_filters(&mut self) {
-        if self.search_query.is_empty() {
-            // No filter, show all
-            self.filtered_indices = (0..self.processes.len()).collect();
-        } else {
-            // Filter by process name
-            let query_lower = self.search_query.to_lowercase();
-            self.filtered_indices = self
-                .processes
-                .iter()
-                .enumerate()
-                .filter(|(_, proc)| proc.name.to_lowercase().contains(&query_lower))
-                .map(|(idx, _)| idx)
-                .collect();
+    /// Navigate history up
+    pub fn history_up(&mut self) {
+        if !self.query_history.is_empty() && self.history_index > 0 {
+            self.history_index -= 1;
+            self.query_input = self.query_history[self.history_index].clone();
         }
-
-        // Reset selection
-        self.selected_index = 0;
-        self.table_state.select(Some(0));
     }
 
-    /// Apply current sort mode
-    pub fn apply_sort(&mut self) {
-        let processes = &self.processes;
-
-        self.filtered_indices.sort_by(|&a, &b| {
-            let proc_a = &processes[a];
-            let proc_b = &processes[b];
-
-            match self.sort_mode {
-                SortMode::Cpu => proc_b
-                    .cpu_percent
-                    .partial_cmp(&proc_a.cpu_percent)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                SortMode::Memory => proc_b.memory_rss.cmp(&proc_a.memory_rss),
-                SortMode::Pid => proc_a.pid.cmp(&proc_b.pid),
-                SortMode::Name => proc_a.name.cmp(&proc_b.name),
-            }
-        });
-    }
-
-    /// Cycle to next sort mode
-    pub fn cycle_sort_mode(&mut self) {
-        self.sort_mode = self.sort_mode.next();
-        self.apply_sort();
-        self.set_notification(format!("Sort by: {}", self.sort_mode.as_str()));
-    }
-
-    /// Select next process
-    pub fn select_next(&mut self) {
-        if self.filtered_indices.is_empty() {
-            return;
+    /// Navigate history down
+    pub fn history_down(&mut self) {
+        if self.history_index < self.query_history.len().saturating_sub(1) {
+            self.history_index += 1;
+            self.query_input = self.query_history[self.history_index].clone();
+        } else if self.history_index == self.query_history.len().saturating_sub(1) {
+            // At the end of history, clear input
+            self.history_index = self.query_history.len();
+            self.query_input.clear();
         }
-
-        self.selected_index = (self.selected_index + 1) % self.filtered_indices.len();
-        self.table_state.select(Some(self.selected_index));
     }
 
-    /// Select previous process
+    /// Navigate to previous result
     pub fn select_previous(&mut self) {
-        if self.filtered_indices.is_empty() {
-            return;
+        if self.selected_result > 0 {
+            self.selected_result -= 1;
+            self.scroll_offset = 0; // Reset scroll when changing selection
         }
-
-        if self.selected_index == 0 {
-            self.selected_index = self.filtered_indices.len() - 1;
-        } else {
-            self.selected_index -= 1;
-        }
-        self.table_state.select(Some(self.selected_index));
     }
 
-    /// Jump to first process
+    /// Navigate to next result
+    pub fn select_next(&mut self) {
+        if self.selected_result < self.query_results.len().saturating_sub(1) {
+            self.selected_result += 1;
+            self.scroll_offset = 0; // Reset scroll when changing selection
+        }
+    }
+
+    /// Navigate to first result
     pub fn select_first(&mut self) {
-        if !self.filtered_indices.is_empty() {
-            self.selected_index = 0;
-            self.table_state.select(Some(0));
-        }
+        self.selected_result = 0;
+        self.scroll_offset = 0;
     }
 
-    /// Jump to last process
+    /// Navigate to last result
     pub fn select_last(&mut self) {
-        if !self.filtered_indices.is_empty() {
-            self.selected_index = self.filtered_indices.len() - 1;
-            self.table_state.select(Some(self.selected_index));
+        if !self.query_results.is_empty() {
+            self.selected_result = self.query_results.len() - 1;
+            self.scroll_offset = 0;
         }
     }
 
-    /// Page down (move by 10)
-    pub fn page_down(&mut self) {
-        if self.filtered_indices.is_empty() {
-            return;
-        }
-
-        self.selected_index = (self.selected_index + 10).min(self.filtered_indices.len() - 1);
-        self.table_state.select(Some(self.selected_index));
+    /// Scroll details panel up
+    pub fn scroll_up(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
 
-    /// Page up (move by 10)
+    /// Scroll details panel down
+    pub fn scroll_down(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_add(1);
+    }
+
+    /// Page up (10 lines)
     pub fn page_up(&mut self) {
-        if self.filtered_indices.is_empty() {
-            return;
-        }
-
-        self.selected_index = self.selected_index.saturating_sub(10);
-        self.table_state.select(Some(self.selected_index));
+        self.scroll_offset = self.scroll_offset.saturating_sub(10);
     }
 
-    /// Get currently selected process
-    pub fn get_selected_process(&self) -> Option<&ProcessInfo> {
-        self.filtered_indices
-            .get(self.selected_index)
-            .and_then(|&idx| self.processes.get(idx))
+    /// Page down (10 lines)
+    pub fn page_down(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_add(10);
     }
 
     /// Set notification message
@@ -293,164 +154,17 @@ impl ProcessTracerState {
         self.notification = Some((message, Instant::now()));
     }
 
-    /// Clear expired notifications (older than 3 seconds)
+    /// Clear expired notifications (> 3 seconds)
     pub fn clear_expired_notifications(&mut self) {
-        if let Some((_, timestamp)) = self.notification {
-            if timestamp.elapsed().as_secs() >= 3 {
+        if let Some((_, timestamp)) = &self.notification {
+            if timestamp.elapsed().as_secs() > 3 {
                 self.notification = None;
             }
         }
     }
 
-    /// Get process count strings
-    pub fn get_counts(&self) -> (usize, usize) {
-        (self.filtered_indices.len(), self.processes.len())
-    }
-
-    /// Build process tree from flat process list
-    pub fn build_tree(&mut self) {
-        // Save current expansion state before rebuilding
-        let expanded_pids: HashSet<u32> = self
-            .tree_nodes
-            .iter()
-            .filter(|(_, node)| node.is_expanded)
-            .map(|(pid, _)| *pid)
-            .collect();
-
-        self.tree_nodes.clear();
-        self.tree_roots.clear();
-
-        // Create a PID -> process_idx map for quick lookup
-        let mut pid_to_idx: HashMap<u32, usize> = HashMap::new();
-        for (idx, proc) in self.processes.iter().enumerate() {
-            pid_to_idx.insert(proc.pid, idx);
-        }
-
-        // Build parent-child relationships, restore expansion state
-        for (idx, proc) in self.processes.iter().enumerate() {
-            let node = ProcessTreeNode {
-                process_idx: idx,
-                children: Vec::new(),
-                is_expanded: expanded_pids.contains(&proc.pid),
-                depth: 0,
-            };
-            self.tree_nodes.insert(proc.pid, node);
-        }
-
-        // Link children to parents
-        for proc in &self.processes {
-            if let Some(parent_idx) = pid_to_idx.get(&proc.ppid) {
-                let parent_pid = self.processes[*parent_idx].pid;
-                if let Some(parent_node) = self.tree_nodes.get_mut(&parent_pid) {
-                    parent_node.children.push(proc.pid);
-                }
-            } else {
-                // No parent in list -> root
-                self.tree_roots.push(proc.pid);
-            }
-        }
-
-        // Auto-expand root nodes only on first build (when no expansion state exists)
-        if expanded_pids.is_empty() {
-            for root_pid in &self.tree_roots.clone() {
-                if let Some(node) = self.tree_nodes.get_mut(root_pid) {
-                    node.is_expanded = true;
-                }
-            }
-        }
-
-        // Calculate depths
-        for root_pid in &self.tree_roots.clone() {
-            self.calculate_depth(*root_pid, 0);
-        }
-
-        // Build initial visible nodes (roots + their expanded children)
-        self.rebuild_visible_nodes();
-    }
-
-    /// Recursively calculate tree depth
-    fn calculate_depth(&mut self, pid: u32, depth: usize) {
-        if let Some(node) = self.tree_nodes.get_mut(&pid) {
-            node.depth = depth;
-            let children = node.children.clone();
-            for child_pid in children {
-                self.calculate_depth(child_pid, depth + 1);
-            }
-        }
-    }
-
-    /// Rebuild visible nodes based on expansion state
-    pub fn rebuild_visible_nodes(&mut self) {
-        self.visible_tree_nodes.clear();
-        let roots = self.tree_roots.clone();
-        for root_pid in &roots {
-            self.add_visible_subtree(*root_pid);
-        }
-    }
-
-    /// Recursively add visible nodes
-    fn add_visible_subtree(&mut self, pid: u32) {
-        self.visible_tree_nodes.push(pid);
-
-        if let Some(node) = self.tree_nodes.get(&pid) {
-            if node.is_expanded {
-                let children = node.children.clone();
-                for child_pid in children {
-                    self.add_visible_subtree(child_pid);
-                }
-            }
-        }
-    }
-
-    /// Toggle between List and Tree view
-    pub fn toggle_view_mode(&mut self) {
-        self.view_mode = match self.view_mode {
-            ViewMode::List => {
-                // Build tree when entering tree view
-                self.build_tree();
-                ViewMode::Tree
-            }
-            ViewMode::Tree => ViewMode::List,
-        };
-
-        self.set_notification(format!("View: {:?}", self.view_mode));
-    }
-
-    /// Toggle expansion of current node in tree view
-    pub fn toggle_tree_expansion(&mut self) {
-        if self.view_mode != ViewMode::Tree {
-            return;
-        }
-
-        // Get currently selected PID from visible nodes
-        if let Some(&pid) = self.visible_tree_nodes.get(self.selected_index) {
-            if let Some(node) = self.tree_nodes.get_mut(&pid) {
-                // Only toggle if has children
-                if !node.children.is_empty() {
-                    node.is_expanded = !node.is_expanded;
-                    self.rebuild_visible_nodes();
-
-                    // Keep selection valid
-                    if self.selected_index >= self.visible_tree_nodes.len() {
-                        self.selected_index = self.visible_tree_nodes.len().saturating_sub(1);
-                    }
-                    self.table_state.select(Some(self.selected_index));
-                }
-            }
-        }
-    }
-
-    /// Get selected process in tree view
-    pub fn get_selected_process_tree(&self) -> Option<&ProcessInfo> {
-        if self.view_mode == ViewMode::Tree {
-            self.visible_tree_nodes
-                .get(self.selected_index)
-                .and_then(|&pid| {
-                    self.tree_nodes.get(&pid)
-                        .and_then(|node| self.processes.get(node.process_idx))
-                })
-        } else {
-            self.get_selected_process()
-        }
+    /// Get currently selected query result
+    pub fn get_selected_result(&self) -> Option<&QueryResult> {
+        self.query_results.get(self.selected_result)
     }
 }
