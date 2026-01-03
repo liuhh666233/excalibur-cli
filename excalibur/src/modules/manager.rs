@@ -1,4 +1,7 @@
-use super::{history::HistoryModule, Module, ModuleAction, ModuleId, ModuleMetadata};
+use super::{
+    history::HistoryModule, proctrace::ProcessTracerModule, Module, ModuleAction, ModuleId,
+    ModuleMetadata,
+};
 use color_eyre::Result;
 use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
 use std::collections::HashMap;
@@ -18,6 +21,10 @@ impl ModuleManager {
         // Register history module
         let history = HistoryModule::new();
         modules.insert(ModuleId::History, Box::new(history));
+
+        // Register process tracer module
+        let proctrace = ProcessTracerModule::new();
+        modules.insert(ModuleId::ProcessTracer, Box::new(proctrace));
 
         Self {
             modules,

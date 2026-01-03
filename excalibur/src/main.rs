@@ -22,6 +22,10 @@ enum Commands {
     /// Browse and search shell command history
     #[command(visible_alias = "h")]
     History,
+
+    /// Inspect running processes and their supervisors
+    #[command(visible_alias = "pt")]
+    ProcessTracer,
 }
 
 fn main() -> color_eyre::Result<()> {
@@ -33,6 +37,7 @@ fn main() -> color_eyre::Result<()> {
     // Determine initial module (if any)
     let initial_module = match cli.command {
         Some(Commands::History) => Some(ModuleId::History),
+        Some(Commands::ProcessTracer) => Some(ModuleId::ProcessTracer),
         None => None,
     };
 

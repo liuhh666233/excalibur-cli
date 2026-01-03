@@ -1,5 +1,6 @@
 pub mod history;
 pub mod manager;
+pub mod proctrace;
 
 use color_eyre::Result;
 use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
@@ -8,6 +9,7 @@ use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModuleId {
     History,
+    ProcessTracer,
 }
 
 impl ModuleId {
@@ -16,6 +18,7 @@ impl ModuleId {
     pub fn from_command_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
             "history" | "h" => Some(ModuleId::History),
+            "proctrace" | "pt" => Some(ModuleId::ProcessTracer),
             _ => None,
         }
     }
