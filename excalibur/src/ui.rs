@@ -24,9 +24,9 @@ impl App {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Title
-                Constraint::Min(0),      // Content
-                Constraint::Length(3),  // Help
+                Constraint::Length(3), // Title
+                Constraint::Min(0),    // Content
+                Constraint::Length(3), // Help
             ])
             .split(area);
 
@@ -79,10 +79,12 @@ impl App {
         list.render(chunks[1], buf);
 
         // Help text
-        let help_text = Paragraph::new("q: Quit | ↑/↓ or j/k: Navigate | Enter: Select | Shortcut key: Direct access")
-            .block(Block::bordered().border_type(BorderType::Rounded))
-            .fg(Color::DarkGray)
-            .centered();
+        let help_text = Paragraph::new(
+            "q: Quit | ↑/↓ or j/k: Navigate | Enter: Select | Shortcut key: Direct access",
+        )
+        .block(Block::bordered().border_type(BorderType::Rounded))
+        .fg(Color::DarkGray)
+        .centered();
         help_text.render(chunks[2], buf);
     }
 

@@ -113,11 +113,12 @@ impl HistoryState {
 
         self.apply_sort();
         self.selected_index = 0;
-        self.table_state.select(if self.filtered_indices.is_empty() {
-            None
-        } else {
-            Some(0)
-        });
+        self.table_state
+            .select(if self.filtered_indices.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
     }
 
     /// Apply current sort mode
@@ -223,11 +224,12 @@ impl HistoryState {
         self.sort_mode = self.sort_mode.next();
         self.apply_sort();
         self.selected_index = 0;
-        self.table_state.select(if self.filtered_indices.is_empty() {
-            None
-        } else {
-            Some(0)
-        });
+        self.table_state
+            .select(if self.filtered_indices.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
     }
 
     /// Set a notification message

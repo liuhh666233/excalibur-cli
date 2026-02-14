@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use procfs::process::{all_processes, Process};
+use procfs::process::{Process, all_processes};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -69,8 +69,8 @@ pub struct ProcessInfo {
     pub cmdline: Vec<String>,
     pub user: String,
     pub cpu_percent: f32,
-    pub memory_rss: u64,      // bytes
-    pub start_time: u64,      // timestamp (seconds since epoch)
+    pub memory_rss: u64, // bytes
+    pub start_time: u64, // timestamp (seconds since epoch)
     pub supervisor: Supervisor,
     pub warnings: Vec<ProcessWarning>,
 }

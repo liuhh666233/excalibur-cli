@@ -7,12 +7,16 @@ use super::{Module, ModuleAction, ModuleId, ModuleMetadata};
 use clipboard::ClipboardManager;
 use color_eyre::Result;
 use parser::FishHistoryParser;
-use ratatui::{buffer::Buffer, crossterm::event::{KeyCode, KeyEvent}, layout::Rect};
+use ratatui::{
+    buffer::Buffer,
+    crossterm::event::{KeyCode, KeyEvent},
+    layout::Rect,
+};
 use state::{HistoryState, InputMode};
 
 #[derive(Debug)]
 pub struct HistoryModule {
-    state: HistoryState,  // 直接存储，不用 Option
+    state: HistoryState, // 直接存储，不用 Option
     clipboard: ClipboardManager,
 }
 
@@ -72,7 +76,8 @@ impl HistoryModule {
                             self.state.set_notification(format!("Copied: {}", cmd.cmd));
                         }
                         Err(e) => {
-                            self.state.set_notification(format!("Failed to copy: {}", e));
+                            self.state
+                                .set_notification(format!("Failed to copy: {}", e));
                         }
                     }
                 }

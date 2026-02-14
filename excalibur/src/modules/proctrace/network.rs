@@ -81,10 +81,8 @@ fn parse_connections(content: &str, protocol: Protocol) -> Result<Vec<NetworkBin
             Err(_) => continue,
         };
 
-        let remote = parse_address_v4(parts[2]).unwrap_or((
-            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            0,
-        ));
+        let remote =
+            parse_address_v4(parts[2]).unwrap_or((IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0));
 
         // Parse state
         let state = parse_state(parts[3]);

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use color_eyre::{eyre::eyre, Result};
+use color_eyre::{Result, eyre::eyre};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -199,10 +199,7 @@ impl FishHistoryParser {
         let mut stats_map: HashMap<String, Vec<i64>> = HashMap::new();
 
         for entry in raw_entries {
-            stats_map
-                .entry(entry.cmd)
-                .or_default()
-                .push(entry.when);
+            stats_map.entry(entry.cmd).or_default().push(entry.when);
         }
 
         let stats = stats_map

@@ -1,10 +1,10 @@
 use crate::event::{AppEvent, Event, EventHandler};
-use crate::modules::{manager::ModuleManager, ModuleAction};
+use crate::modules::{ModuleAction, manager::ModuleManager};
 use crate::view::View;
 use ratatui::{
+    Terminal,
     backend::Backend,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
-    Terminal,
 };
 
 /// Application.
@@ -91,9 +91,8 @@ impl App {
                         // Must restore terminal before exit since exit() bypasses Drop
 
                         // Open /dev/tty to send cleanup commands
-                        if let Ok(mut tty) = std::fs::OpenOptions::new()
-                            .write(true)
-                            .open("/dev/tty")
+                        if let Ok(mut tty) =
+                            std::fs::OpenOptions::new().write(true).open("/dev/tty")
                         {
                             // Clear screen and restore terminal
                             let _ = crossterm::execute!(
@@ -115,9 +114,8 @@ impl App {
                         // Must restore terminal before exit since exit() bypasses Drop
 
                         // Open /dev/tty to send cleanup commands
-                        if let Ok(mut tty) = std::fs::OpenOptions::new()
-                            .write(true)
-                            .open("/dev/tty")
+                        if let Ok(mut tty) =
+                            std::fs::OpenOptions::new().write(true).open("/dev/tty")
                         {
                             // Clear screen and restore terminal
                             let _ = crossterm::execute!(
@@ -178,12 +176,11 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if module_count > 0 {
-                    self.selected_menu_item =
-                        if self.selected_menu_item == 0 {
-                            module_count - 1
-                        } else {
-                            self.selected_menu_item - 1
-                        };
+                    self.selected_menu_item = if self.selected_menu_item == 0 {
+                        module_count - 1
+                    } else {
+                        self.selected_menu_item - 1
+                    };
                 }
             }
             KeyCode::Enter => {
