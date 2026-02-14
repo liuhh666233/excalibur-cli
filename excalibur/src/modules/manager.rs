@@ -1,6 +1,6 @@
 use super::{
-    history::HistoryModule, proctrace::ProcessTracerModule, Module, ModuleAction, ModuleId,
-    ModuleMetadata,
+    Module, ModuleAction, ModuleId, ModuleMetadata, history::HistoryModule,
+    proctrace::ProcessTracerModule, settings::SettingsModule,
 };
 use color_eyre::Result;
 use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
@@ -25,6 +25,10 @@ impl ModuleManager {
         // Register process tracer module
         let proctrace = ProcessTracerModule::new();
         modules.insert(ModuleId::ProcessTracer, Box::new(proctrace));
+
+        // Register settings module
+        let settings = SettingsModule::new();
+        modules.insert(ModuleId::Settings, Box::new(settings));
 
         Self {
             modules,
