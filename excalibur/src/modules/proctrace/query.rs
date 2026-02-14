@@ -1,28 +1,28 @@
 use super::collector::{
-    read_environment, read_process, read_working_directory, ProcessCollector, ProcessInfo,
-    Supervisor,
+    ProcessCollector, ProcessInfo, Supervisor, read_environment, read_process,
+    read_working_directory,
 };
-use super::network::{find_process_by_port, get_process_bindings, NetworkBinding};
-use super::systemd::{fetch_systemd_metadata, SystemdMetadata};
+use super::network::{NetworkBinding, find_process_by_port, get_process_bindings};
+use super::systemd::{SystemdMetadata, fetch_systemd_metadata};
 use color_eyre::Result;
 use std::collections::HashMap;
 
 /// Query type for finding processes
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryType {
-    ByName(String),  // Process name substring match
-    ByPid(u32),      // Exact PID
-    ByPort(u16),     // Listening port
+    ByName(String), // Process name substring match
+    ByPid(u32),     // Exact PID
+    ByPort(u16),    // Listening port
 }
 
 /// Query result with full context
 #[derive(Debug, Clone)]
 pub struct QueryResult {
     pub process: ProcessInfo,
-    pub ancestor_chain: Vec<ProcessInfo>,         // PID → PPID → ... → init
-    pub working_directory: Option<String>,        // /proc/[pid]/cwd
-    pub environment: HashMap<String, String>,     // /proc/[pid]/environ
-    pub network_bindings: Vec<NetworkBinding>,    // Network connections
+    pub ancestor_chain: Vec<ProcessInfo>, // PID → PPID → ... → init
+    pub working_directory: Option<String>, // /proc/[pid]/cwd
+    pub environment: HashMap<String, String>, // /proc/[pid]/environ
+    pub network_bindings: Vec<NetworkBinding>, // Network connections
     pub systemd_metadata: Option<SystemdMetadata>, // Systemd unit info
 }
 

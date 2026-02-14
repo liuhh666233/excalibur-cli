@@ -13,11 +13,11 @@ pub fn render(state: &HistoryState, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Length(3),  // Search bar
-            Constraint::Min(10),    // Table
-            Constraint::Length(6),  // Details panel
-            Constraint::Length(3),  // Status bar
+            Constraint::Length(3), // Header
+            Constraint::Length(3), // Search bar
+            Constraint::Min(10),   // Table
+            Constraint::Length(6), // Details panel
+            Constraint::Length(3), // Status bar
         ])
         .split(area);
 
@@ -56,7 +56,9 @@ fn render_search_bar(state: &HistoryState, area: Rect, buf: &mut Buffer) {
     let (text, style) = match state.input_mode {
         InputMode::Search => (
             format!(" Search: {}█", state.search_query),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
         InputMode::Normal if !state.search_query.is_empty() => (
             format!(" Filter: {} ", state.search_query),
@@ -118,7 +120,8 @@ fn render_table(state: &HistoryState, area: Rect, buf: &mut Buffer) {
             let cmd = &state.commands[idx];
 
             // 使用字节长度预检查（更快）
-            let cmd_display = if cmd.cmd.len() > 180 {  // 约 60 个中文字符
+            let cmd_display = if cmd.cmd.len() > 180 {
+                // 约 60 个中文字符
                 // 只在需要时才调用昂贵的 chars 操作
                 let char_count = cmd.cmd.chars().count();
                 if char_count > 60 {
@@ -234,7 +237,9 @@ fn render_details(state: &HistoryState, area: Rect, buf: &mut Buffer) {
 fn render_status_bar(state: &HistoryState, area: Rect, buf: &mut Buffer) {
     let help_text = match state.input_mode {
         InputMode::Search => "Esc: Exit search │ Enter: Apply filter │ Type to search",
-        InputMode::Normal => "Enter: Select │ Ctrl+O: Execute │ Esc/q: Exit │ /: Search │ s: Sort │ ↑↓/jk: Navigate",
+        InputMode::Normal => {
+            "Enter: Select │ Ctrl+O: Execute │ Esc/q: Exit │ /: Search │ s: Sort │ ↑↓/jk: Navigate"
+        }
     };
 
     let status = Paragraph::new(help_text)

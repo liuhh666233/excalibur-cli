@@ -6,7 +6,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget, Widget},
+    widgets::{
+        Block, BorderType, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, StatefulWidget, Widget,
+    },
 };
 
 /// Render the process tracer UI
@@ -27,10 +30,10 @@ fn render_query_mode(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Length(5),  // Input box (larger)
-            Constraint::Min(8),     // Help text
-            Constraint::Length(3),  // Status bar
+            Constraint::Length(3), // Header
+            Constraint::Length(5), // Input box (larger)
+            Constraint::Min(8),    // Help text
+            Constraint::Length(3), // Status bar
         ])
         .split(area);
 
@@ -70,9 +73,12 @@ fn render_query_mode(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
 
     // Help text
     let help_lines = vec![
-        Line::from(vec![
-            Span::styled("Query by:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Query by:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  • ", Style::default().fg(Color::Green)),
@@ -93,7 +99,10 @@ fn render_query_mode(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
         Line::from(""),
         Line::from(vec![
             Span::styled("Note: ", Style::default().fg(Color::Yellow)),
-            Span::styled("Port queries for root processes require sudo", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "Port queries for root processes require sudo",
+                Style::default().fg(Color::DarkGray),
+            ),
         ]),
         Line::from(vec![
             Span::styled("History: ", Style::default().fg(Color::Cyan)),
@@ -101,13 +110,12 @@ fn render_query_mode(state: &ProcessTracerState, area: Rect, buf: &mut Buffer) {
         ]),
     ];
 
-    let help = Paragraph::new(help_lines)
-        .block(
-            Block::bordered()
-                .title(" Help ")
-                .border_type(BorderType::Rounded)
-                .style(Style::default().fg(Color::DarkGray)),
-        );
+    let help = Paragraph::new(help_lines).block(
+        Block::bordered()
+            .title(" Help ")
+            .border_type(BorderType::Rounded)
+            .style(Style::default().fg(Color::DarkGray)),
+    );
     help.render(chunks[2], buf);
 
     // Status bar
@@ -328,7 +336,10 @@ fn render_detailed_analysis(state: &ProcessTracerState, area: Rect, buf: &mut Bu
 
             lines.push(Line::from(vec![
                 Span::raw(prefix),
-                Span::styled(format!("PID {}", ancestor.pid), Style::default().fg(Color::Green)),
+                Span::styled(
+                    format!("PID {}", ancestor.pid),
+                    Style::default().fg(Color::Green),
+                ),
                 Span::raw(" "),
                 Span::styled(&ancestor.name, Style::default().fg(Color::Yellow)),
                 Span::styled(supervisor_str, Style::default().fg(Color::Cyan)),
@@ -418,10 +429,7 @@ fn render_detailed_analysis(state: &ProcessTracerState, area: Rect, buf: &mut Bu
 
         lines.push(Line::from(vec![
             Span::styled("State:       ", Style::default().fg(Color::Cyan)),
-            Span::raw(format!(
-                "{}/{}",
-                systemd.active_state, systemd.sub_state
-            )),
+            Span::raw(format!("{}/{}", systemd.active_state, systemd.sub_state)),
         ]));
 
         if let Some(ref restart) = systemd.restart_policy {
@@ -469,9 +477,7 @@ fn render_detailed_analysis(state: &ProcessTracerState, area: Rect, buf: &mut Bu
     if !result.process.warnings.is_empty() {
         lines.push(Line::from(vec![Span::styled(
             "=== WARNINGS ===",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )]));
         lines.push(Line::from(""));
 
@@ -495,7 +501,10 @@ fn render_detailed_analysis(state: &ProcessTracerState, area: Rect, buf: &mut Bu
 
     let details = Paragraph::new(visible_lines).block(
         Block::bordered()
-            .title(format!(" Details - {} (PID {}) ", result.process.name, result.process.pid))
+            .title(format!(
+                " Details - {} (PID {}) ",
+                result.process.name, result.process.pid
+            ))
             .border_type(BorderType::Rounded),
     );
 

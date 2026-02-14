@@ -1,6 +1,7 @@
 pub mod history;
 pub mod manager;
 pub mod proctrace;
+pub mod settings;
 
 use color_eyre::Result;
 use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
@@ -10,6 +11,7 @@ use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
 pub enum ModuleId {
     History,
     ProcessTracer,
+    Settings,
 }
 
 impl ModuleId {
@@ -19,6 +21,7 @@ impl ModuleId {
         match name.to_lowercase().as_str() {
             "history" | "h" => Some(ModuleId::History),
             "proctrace" | "pt" => Some(ModuleId::ProcessTracer),
+            "settings" | "s" => Some(ModuleId::Settings),
             _ => None,
         }
     }

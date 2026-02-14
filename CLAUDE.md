@@ -10,6 +10,7 @@ cargo build --release
 cargo run                    # main menu
 cargo run -- history         # direct module entry
 cargo run -- process-tracer  # direct module entry
+cargo run -- settings        # direct module entry
 ```
 
 ## Architecture
@@ -25,7 +26,8 @@ excalibur/src/
     ├── mod.rs           # Module trait, ModuleId, ModuleAction
     ├── manager.rs       # ModuleManager (registry, routing)
     ├── history/         # Fish shell history browser
-    └── proctrace/       # Process tracer/analyzer
+    ├── proctrace/       # Process tracer/analyzer
+    └── settings/        # Claude Code settings switcher
 ```
 
 ## Modules
@@ -35,6 +37,7 @@ excalibur/src/
 | core | `.claude/rules/core.md` | App framework: event loop, module system, main menu |
 | history | `.claude/rules/history.md` | Fish shell history browser with search, sort, clipboard |
 | proctrace | `.claude/rules/proctrace.md` | Query-driven process inspector (name/PID/port) |
+| settings | `.claude/rules/settings.md` | Claude Code settings profile switcher |
 
 ## Adding a New Module
 

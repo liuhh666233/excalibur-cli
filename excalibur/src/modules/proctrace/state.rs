@@ -5,8 +5,8 @@ use std::time::Instant;
 /// Input mode for the process tracer
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum InputMode {
-    Query,         // Entering query
-    ViewResults,   // Browsing results
+    Query,       // Entering query
+    ViewResults, // Browsing results
 }
 
 /// State for the process tracer module (query-driven)

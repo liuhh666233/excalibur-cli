@@ -7,9 +7,9 @@ use std::process::Command;
 pub struct SystemdMetadata {
     pub unit_name: String,
     pub description: Option<String>,
-    pub load_state: String,       // loaded, not-found, masked
-    pub active_state: String,     // active, inactive, failed
-    pub sub_state: String,        // running, dead, exited
+    pub load_state: String,   // loaded, not-found, masked
+    pub active_state: String, // active, inactive, failed
+    pub sub_state: String,    // running, dead, exited
     pub main_pid: Option<u32>,
     pub exec_start: Option<String>,
     pub restart_policy: Option<String>,

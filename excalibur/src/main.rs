@@ -26,6 +26,10 @@ enum Commands {
     /// Inspect running processes and their supervisors
     #[command(visible_alias = "pt")]
     ProcessTracer,
+
+    /// Switch Claude Code settings profiles
+    #[command(visible_alias = "s")]
+    Settings,
 }
 
 fn main() -> color_eyre::Result<()> {
@@ -38,15 +42,13 @@ fn main() -> color_eyre::Result<()> {
     let initial_module = match cli.command {
         Some(Commands::History) => Some(ModuleId::History),
         Some(Commands::ProcessTracer) => Some(ModuleId::ProcessTracer),
+        Some(Commands::Settings) => Some(ModuleId::Settings),
         None => None,
     };
 
     // Open /dev/tty for terminal I/O instead of stdout
     // This allows stdout to be used for command output while TUI uses /dev/tty
-    let tty = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")?;
+    let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
 
     let backend = ratatui::backend::CrosstermBackend::new(tty);
     let mut terminal = ratatui::Terminal::new(backend)?;

@@ -32,8 +32,7 @@ impl ProcessTracerModule {
         let query = match self.state.parse_query() {
             Ok(q) => q,
             Err(e) => {
-                self.state
-                    .set_notification(format!("Invalid query: {}", e));
+                self.state.set_notification(format!("Invalid query: {}", e));
                 return Ok(());
             }
         };
@@ -42,7 +41,8 @@ impl ProcessTracerModule {
         match self.query_engine.execute(query) {
             Ok(results) => {
                 if results.is_empty() {
-                    self.state.set_notification("No processes found".to_string());
+                    self.state
+                        .set_notification("No processes found".to_string());
                 } else {
                     // Store results and switch to results mode
                     self.state.query_results = results;
@@ -53,8 +53,10 @@ impl ProcessTracerModule {
                     // Add to history
                     self.state.add_to_history(self.state.query_input.clone());
 
-                    self.state
-                        .set_notification(format!("Found {} result(s)", self.state.query_results.len()));
+                    self.state.set_notification(format!(
+                        "Found {} result(s)",
+                        self.state.query_results.len()
+                    ));
                 }
             }
             Err(e) => {
