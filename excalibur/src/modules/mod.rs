@@ -1,5 +1,6 @@
 pub mod history;
 pub mod manager;
+#[cfg(target_os = "linux")]
 pub mod proctrace;
 pub mod settings;
 
@@ -10,6 +11,7 @@ use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModuleId {
     History,
+    #[cfg(target_os = "linux")]
     ProcessTracer,
     Settings,
 }
@@ -20,6 +22,7 @@ impl ModuleId {
     pub fn from_command_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
             "history" | "h" => Some(ModuleId::History),
+            #[cfg(target_os = "linux")]
             "proctrace" | "pt" => Some(ModuleId::ProcessTracer),
             "settings" | "s" => Some(ModuleId::Settings),
             _ => None,

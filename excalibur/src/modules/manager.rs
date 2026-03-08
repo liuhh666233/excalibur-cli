@@ -1,7 +1,9 @@
 use super::{
     Module, ModuleAction, ModuleId, ModuleMetadata, history::HistoryModule,
-    proctrace::ProcessTracerModule, settings::SettingsModule,
+    settings::SettingsModule,
 };
+#[cfg(target_os = "linux")]
+use super::proctrace::ProcessTracerModule;
 use color_eyre::Result;
 use ratatui::{buffer::Buffer, crossterm::event::KeyEvent, layout::Rect};
 use std::collections::HashMap;
@@ -22,9 +24,12 @@ impl ModuleManager {
         let history = HistoryModule::new();
         modules.insert(ModuleId::History, Box::new(history));
 
-        // Register process tracer module
-        let proctrace = ProcessTracerModule::new();
-        modules.insert(ModuleId::ProcessTracer, Box::new(proctrace));
+        // Register process tracer module (Linux only)
+        #[cfg(target_os = "linux")]
+        {
+            let proctrace = ProcessTracerModule::new();
+            modules.insert(ModuleId::ProcessTracer, Box::new(proctrace));
+        }
 
         // Register settings module
         let settings = SettingsModule::new();
