@@ -242,7 +242,8 @@ fn render_edit_panel(state: &SettingsState, area: Rect, buf: &mut Buffer) {
         .edit_entries
         .iter()
         .enumerate()
-        .map(|(i, (key, value))| {
+        .map(|(i, (raw_key, value))| {
+            let key = raw_key.replace('\0', ".");
             let selected = i == state.edit_index;
             let is_editing = selected && state.input_mode == InputMode::EditValue;
 

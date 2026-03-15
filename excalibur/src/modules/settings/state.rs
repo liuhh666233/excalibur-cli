@@ -216,6 +216,9 @@ impl SettingsState {
         self.edit_index = 0;
     }
 
+    /// Separator for flattened key paths (must not appear in real JSON keys)
+    const KEY_SEP: char = '\0';
+
     fn flatten_json(prefix: &str, value: &serde_json::Value, entries: &mut Vec<(String, String)>) {
         match value {
             serde_json::Value::Object(map) => {
@@ -223,7 +226,7 @@ impl SettingsState {
                     let key = if prefix.is_empty() {
                         k.clone()
                     } else {
-                        format!("{}.{}", prefix, k)
+                        format!("{}{}{}", prefix, Self::KEY_SEP, k)
                     };
                     Self::flatten_json(&key, v, entries);
                 }
@@ -248,7 +251,7 @@ impl SettingsState {
             .map_err(|_| "Invalid JSON".to_string())?;
 
         for (dotted_key, v) in &self.edit_entries {
-            let parts: Vec<&str> = dotted_key.split('.').collect();
+            let parts: Vec<&str> = dotted_key.split(Self::KEY_SEP).collect();
             // Parse value: try bool/number/null first, then fall back to string
             let val = if v == "true" {
                 serde_json::Value::Bool(true)
