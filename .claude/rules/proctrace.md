@@ -13,6 +13,8 @@ paths:
 
 Query-driven process inspector ("Why is this running?"). Queries by name, PID, or port; shows ancestor chain, network bindings, systemd metadata, environment, and warnings.
 
+**Linux-only**: the entire module is gated behind `#[cfg(target_os = "linux")]` — the `proctrace` module, the `ModuleId::ProcessTracer` variant, its `ModuleManager` registration, and the `process-tracer` CLI subcommand all compile out on non-Linux targets (it reads `/proc`). See [core.md](core.md).
+
 ## Key Files
 
 | File | Role |

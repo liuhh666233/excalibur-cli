@@ -16,19 +16,23 @@ cargo run -- settings        # direct module entry
 ## Architecture
 
 ```
-excalibur/src/
-├── main.rs              # CLI entry (clap), terminal setup
-├── app.rs               # Event loop, key dispatch, ModuleAction handling
-├── event.rs             # Background event thread (Tick/Crossterm/AppEvent)
-├── view.rs              # View enum (MainMenu / Module)
-├── ui.rs                # Main menu rendering
-└── modules/
-    ├── mod.rs           # Module trait, ModuleId, ModuleAction
-    ├── manager.rs       # ModuleManager (registry, routing)
-    ├── history/         # Fish shell history browser
-    ├── proctrace/       # Process tracer/analyzer
-    └── settings/        # Claude Code settings switcher
+excalibur/
+├── src/
+│   ├── main.rs          # CLI entry (clap), terminal setup
+│   ├── app.rs           # Event loop, key dispatch, ModuleAction handling
+│   ├── event.rs         # Background event thread (Tick/Crossterm/AppEvent)
+│   ├── view.rs          # View enum (MainMenu / Module)
+│   ├── ui.rs            # Main menu rendering
+│   └── modules/
+│       ├── mod.rs       # Module trait, ModuleId, ModuleAction
+│       ├── manager.rs   # ModuleManager (registry, routing)
+│       ├── history/     # Fish shell history browser
+│       ├── proctrace/   # Process tracer/analyzer (Linux-only, cfg-gated)
+│       └── settings/    # Claude Code settings manager
+└── install/             # Fish shell integration (exh.fish, excc.fish, completions)
 ```
+
+`proctrace` is gated behind `#[cfg(target_os = "linux")]` — the module, its `ModuleId` variant, manager registration, and the `process-tracer` subcommand all compile out off Linux.
 
 ## Modules
 
@@ -36,8 +40,8 @@ excalibur/src/
 |--------|-----------|-------------|
 | core | `.claude/rules/core.md` | App framework: event loop, module system, main menu |
 | history | `.claude/rules/history.md` | Fish shell history browser with search, sort, clipboard |
-| proctrace | `.claude/rules/proctrace.md` | Query-driven process inspector (name/PID/port) |
-| settings | `.claude/rules/settings.md` | Claude Code settings profile switcher |
+| proctrace | `.claude/rules/proctrace.md` | Query-driven process inspector (name/PID/port), Linux-only |
+| settings | `.claude/rules/settings.md` | Claude Code settings profile manager: switch, copy, rename, delete, JSON key-value editor |
 
 ## Adding a New Module
 
